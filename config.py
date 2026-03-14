@@ -6,9 +6,9 @@ Edit MACHINES if SSH hostnames differ on your network.
 import os
 
 HOME = os.path.expanduser("~")
-LLAMA_BIN = os.path.join(HOME, "llama.cpp")
-MODEL_ROOT = HOME
-RESULTS_DIR = os.path.join(HOME, "speculative-moe-research", "results")
+LLAMA_BIN = os.path.join(HOME, "Documents/mlx-community/llama.cpp")
+MODEL_ROOT = os.path.join(HOME, "Documents/mlx-community")
+RESULTS_DIR = os.path.join(HOME, "Documents/Codes/speculative-moe-research", "results")
 PYTHON_ENV = os.path.join(
     HOME, "Documents/mlx-community/3-11-mlx-community-env/bin/activate"
 )
@@ -17,9 +17,9 @@ PYTHON_ENV = os.path.join(
 # "local" means run directly; others are SSH targets.
 # Adjust hostnames to match your network (try `hostname` on each machine).
 MACHINES = {
-    "m2ultra": {"host": "192.168.0.103","name":"alex", "ram_gb": 192, "chip": "M2 Ultra"},
-    "m1max":   {"host": "192.168.0.109","name":"alex",  "ram_gb": 32, "chip": "M1 MAX"},
-    "m2pro":   {"host": "192.168.0.107","name":"atomgradient",  "ram_gb": 32, "chip": "M2 Pro"},
+    "m2ultra": {"host": "local", "name": "alex", "ram_gb": 192, "chip": "M2 Ultra"},
+    "m1max":   {"host": "192.168.0.109", "name": "alex", "ram_gb": 32, "chip": "M1 MAX"},
+    "m2pro":   {"host": "192.168.0.107", "name": "atomgradient", "ram_gb": 32, "chip": "M2 Pro"},
 }
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -75,28 +75,28 @@ MODELS = [
         "label":   "Qwen3.5-0.8B bf16",
         "dir":     "Qwen3.5-0.8B",
         "role":    "dense_baseline",
-        "machine": "m2pro",
+        "machine": "m2ultra",
         "ram_est": 2,
         "active_params_b": 0.8,
         "total_params_b": 0.8,
     },
     {
         "id":      "dense_2b",
-        "label":   "Qwen3.5-2B bf16",
-        "dir":     "Qwen3.5-2B-bf16",
+        "label":   "Qwen3.5-2B Q8",
+        "dir":     "Qwen3.5-2B-GGUF-UD-Q8_K_L",
         "role":    "dense_baseline",
-        "machine": "m2pro",
-        "ram_est": 4,
+        "machine": "m2ultra",
+        "ram_est": 3,
         "active_params_b": 2.0,
         "total_params_b": 2.0,
     },
     {
         "id":      "dense_4b",
-        "label":   "Qwen3.5-4B bf16",
-        "dir":     "Qwen3.5-4B-bf16",
+        "label":   "Qwen3.5-4B Q8",
+        "dir":     "Qwen3.5-4B-quants",
         "role":    "dense_baseline",
-        "machine": "m1max",
-        "ram_est": 8,
+        "machine": "m2ultra",
+        "ram_est": 5,
         "active_params_b": 4.0,
         "total_params_b": 4.0,
     },
@@ -105,7 +105,7 @@ MODELS = [
         "label":   "Qwen3.5-9B bf16",
         "dir":     "Qwen3.5-9B",
         "role":    "dense_baseline",
-        "machine": "m1max",
+        "machine": "m2ultra",
         "ram_est": 18,
         "active_params_b": 9.0,
         "total_params_b": 9.0,
@@ -117,7 +117,7 @@ MODELS = [
         "label":   "Gemma-3-4B Q4",
         "dir":     "gemma-3-4b-it-qat-4bit",
         "role":    "cross_arch",
-        "machine": "m2pro",
+        "machine": "m2ultra",
         "ram_est": 3,
         "active_params_b": 4.0,
         "total_params_b": 4.0,

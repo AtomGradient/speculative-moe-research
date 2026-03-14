@@ -68,7 +68,9 @@ def ssh_prefix(machine):
     info = MACHINES[machine]
     if info["host"] == "local":
         return []
-    return ["ssh", info["host"]]
+    user = info.get("name", "")
+    ssh_target = f"{user}@{info['host']}" if user else info["host"]
+    return ["ssh", ssh_target]
 
 def run_cmd(cmd_list, machine, log_file):
     """Run cmd on machine, tee output to log_file, return stdout."""
@@ -129,10 +131,10 @@ def bench_cmd(model_file, n_prompt, n_predict):
     return [
         BINS["llama-bench"],
         "-m", model_file,
-        "-npp", str(n_prompt),
-        "-ntg", str(n_predict),
+        "-p", str(n_prompt),
+        "-n", str(n_predict),
         "-r", "1",
-        "--no-mmap",
+        "-o", "csv",
     ]
 
 def speculative_cmd(target_file, draft_file, draft_len, prompt_text, n_predict):
@@ -145,7 +147,6 @@ def speculative_cmd(target_file, draft_file, draft_len, prompt_text, n_predict):
         "-n", str(n_predict),
         "--temp", str(TEMPERATURE),
         "-p", prompt_text,
-        "--no-mmap",
     ]
 
 # ── Experiment suites ─────────────────────────────────────────────────────────

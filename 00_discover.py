@@ -88,9 +88,11 @@ for name, info in MACHINES.items():
         ssh_ok[name] = True
         continue
     host = info["host"]
+    user = info.get("name", "")
+    ssh_target = f"{user}@{host}" if user else host
     r = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
-         host, f"source {PYTHON_ENV} && python3 -c 'import sys; print(sys.version)'"],
+         ssh_target, f"source {PYTHON_ENV} && python3 -c 'import sys; print(sys.version)'"],
         capture_output=True, text=True
     )
     if r.returncode == 0:

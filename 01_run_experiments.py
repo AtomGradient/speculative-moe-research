@@ -77,10 +77,11 @@ def run_cmd(cmd_list, machine, log_file):
     pfx = ssh_prefix(machine)
     full = pfx + cmd_list if pfx else cmd_list
     log_file.parent.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run(full, capture_output=True, text=True, timeout=600)
+    combined = r.stdout + "\n" + r.stderr
     with open(log_file, "w") as fh:
-        r = subprocess.run(full, stdout=fh, stderr=subprocess.STDOUT,
-                           text=True, timeout=600)
-    return log_file.read_text(), r.returncode
+        fh.write(combined)
+    return combined, r.returncode
 
 def parse_llama_bench_output(raw):
     """Extract tokens/sec and latency from llama-bench CSV stdout."""
@@ -110,12 +111,20 @@ def parse_llama_bench_output(raw):
 def parse_speculative_output(raw):
     """Extract acceptance rate and speed from llama-speculative stdout."""
     result = {"tokens_per_sec": None, "draft_acceptance_rate": None, "eval_ms_per_token": None}
-    m = re.search(r"draft acceptance rate\s*=\s*([\d.]+)", raw, re.IGNORECASE)
-    if m: result["draft_acceptance_rate"] = float(m.group(1))
-    m = re.search(r"(\d+\.?\d+)\s+tokens per second", raw, re.IGNORECASE)
-    if m: result["tokens_per_sec"] = float(m.group(1))
-    m = re.search(r"eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)", raw)
-    if m: result["eval_ms_per_token"] = float(m.group(1)) / int(m.group(2)) * 1000
+    # acceptance rate: "accept    = 85.000%"
+    m = re.search(r"accept\s*=\s*([\d.]+)\s*%", raw)
+    if m:
+        result["draft_acceptance_rate"] = float(m.group(1)) / 100.0
+    # n_predict
+    m_np = re.search(r"n_predict\s*=\s*(\d+)", raw)
+    n_predict = int(m_np.group(1)) if m_np else None
+    # target total time (after "target:" section)
+    target_section = raw.split("target:")[-1] if "target:" in raw else raw
+    m_total = re.search(r"total time\s*=\s*([\d.]+)\s*ms", target_section)
+    if m_total and n_predict and n_predict > 0:
+        total_ms = float(m_total.group(1))
+        result["tokens_per_sec"] = n_predict / (total_ms / 1000.0)
+        result["eval_ms_per_token"] = total_ms / n_predict
     return result
 
 # ── CSV writer ────────────────────────────────────────────────────────────────

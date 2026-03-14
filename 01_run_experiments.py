@@ -83,24 +83,28 @@ def run_cmd(cmd_list, machine, log_file):
     return log_file.read_text(), r.returncode
 
 def parse_llama_bench_output(raw):
-    """Extract tokens/sec and latency from llama-bench stdout."""
-    # llama-bench table: model | size | params | backend | ... | t/s
+    """Extract tokens/sec and latency from llama-bench CSV stdout."""
     result = {"tokens_per_sec": None, "prompt_eval_ms": None, "eval_ms_per_token": None}
-    for line in raw.splitlines():
-        # tg (text generation) row
-        m = re.search(r"\btg\b.*?(\d+\.?\d*)\s*±", line)
-        if m:
-            result["tokens_per_sec"] = float(m.group(1))
-        m = re.search(r"eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)", line)
-        if m:
-            result["eval_ms_per_token"] = float(m.group(1)) / int(m.group(2)) * 1000
-        m = re.search(r"prompt eval time\s*=\s*([\d.]+)\s*ms", line)
-        if m:
-            result["prompt_eval_ms"] = float(m.group(1))
-    # also try simpler pattern
-    m = re.search(r"(\d+\.?\d+)\s+tokens per second", raw)
-    if m and result["tokens_per_sec"] is None:
-        result["tokens_per_sec"] = float(m.group(1))
+    lines = [l for l in raw.splitlines() if l.strip() and not l.startswith("ggml")]
+    csv_lines = [l for l in lines if "," in l and ("avg_ts" in l or "n_gen" in l or "n_prompt" in l)]
+    if len(csv_lines) < 2:
+        return result
+    header = csv_lines[0]
+    cols = [c.strip().strip('"') for c in header.split(",")]
+    for data_line in csv_lines[1:]:
+        vals = [v.strip().strip('"') for v in data_line.split(",")]
+        row = dict(zip(cols, vals))
+        n_gen = int(row.get("n_gen", "0") or "0")
+        n_prompt = int(row.get("n_prompt", "0") or "0")
+        avg_ts = float(row.get("avg_ts", "0") or "0")
+        avg_ns = float(row.get("avg_ns", "0") or "0")
+        if n_gen > 0 and avg_ts > 0:
+            # text generation row
+            result["tokens_per_sec"] = avg_ts
+            result["eval_ms_per_token"] = (avg_ns / 1e6) / n_gen if n_gen > 0 else None
+        elif n_prompt > 0 and avg_ns > 0:
+            # prompt processing row
+            result["prompt_eval_ms"] = avg_ns / 1e6
     return result
 
 def parse_speculative_output(raw):

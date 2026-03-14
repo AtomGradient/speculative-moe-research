@@ -85,26 +85,32 @@ def run_cmd(cmd_list, machine, log_file):
 
 def parse_llama_bench_output(raw):
     """Extract tokens/sec and latency from llama-bench CSV stdout."""
+    import io
     result = {"tokens_per_sec": None, "prompt_eval_ms": None, "eval_ms_per_token": None}
-    lines = [l for l in raw.splitlines() if l.strip() and not l.startswith("ggml")]
-    csv_lines = [l for l in lines if "," in l and ("avg_ts" in l or "n_gen" in l or "n_prompt" in l)]
-    if len(csv_lines) < 2:
+    lines = raw.splitlines()
+    # Find the CSV header line (contains "avg_ts")
+    header_idx = None
+    for i, line in enumerate(lines):
+        if "avg_ts" in line and "n_gen" in line:
+            header_idx = i
+            break
+    if header_idx is None:
         return result
-    header = csv_lines[0]
-    cols = [c.strip().strip('"') for c in header.split(",")]
-    for data_line in csv_lines[1:]:
-        vals = [v.strip().strip('"') for v in data_line.split(",")]
-        row = dict(zip(cols, vals))
-        n_gen = int(row.get("n_gen", "0") or "0")
-        n_prompt = int(row.get("n_prompt", "0") or "0")
-        avg_ts = float(row.get("avg_ts", "0") or "0")
-        avg_ns = float(row.get("avg_ns", "0") or "0")
+    # Use proper CSV reader to handle quoted fields with commas
+    csv_text = "\n".join(lines[header_idx:header_idx + 10])  # header + a few data rows
+    reader = csv.DictReader(io.StringIO(csv_text))
+    for row in reader:
+        try:
+            n_gen = int(row.get("n_gen", "0") or "0")
+            n_prompt = int(row.get("n_prompt", "0") or "0")
+            avg_ts = float(row.get("avg_ts", "0") or "0")
+            avg_ns = float(row.get("avg_ns", "0") or "0")
+        except (ValueError, TypeError):
+            continue
         if n_gen > 0 and avg_ts > 0:
-            # text generation row
             result["tokens_per_sec"] = avg_ts
-            result["eval_ms_per_token"] = (avg_ns / 1e6) / n_gen if n_gen > 0 else None
+            result["eval_ms_per_token"] = (avg_ns / 1e6) / n_gen
         elif n_prompt > 0 and avg_ns > 0:
-            # prompt processing row
             result["prompt_eval_ms"] = avg_ns / 1e6
     return result
 
@@ -115,16 +121,23 @@ def parse_speculative_output(raw):
     m = re.search(r"accept\s*=\s*([\d.]+)\s*%", raw)
     if m:
         result["draft_acceptance_rate"] = float(m.group(1)) / 100.0
-    # n_predict
-    m_np = re.search(r"n_predict\s*=\s*(\d+)", raw)
-    n_predict = int(m_np.group(1)) if m_np else None
-    # target total time (after "target:" section)
-    target_section = raw.split("target:")[-1] if "target:" in raw else raw
-    m_total = re.search(r"total time\s*=\s*([\d.]+)\s*ms", target_section)
-    if m_total and n_predict and n_predict > 0:
-        total_ms = float(m_total.group(1))
-        result["tokens_per_sec"] = n_predict / (total_ms / 1000.0)
-        result["eval_ms_per_token"] = total_ms / n_predict
+    # Prefer the "decoded X tokens in Y seconds, speed: Z t/s" line (wall-clock)
+    m_dec = re.search(r"decoded\s+(\d+)\s+tokens\s+in\s+([\d.]+)\s+seconds,\s+speed:\s+([\d.]+)\s+t/s", raw)
+    if m_dec:
+        n_tok = int(m_dec.group(1))
+        total_sec = float(m_dec.group(2))
+        result["tokens_per_sec"] = float(m_dec.group(3))
+        result["eval_ms_per_token"] = (total_sec * 1000.0) / n_tok if n_tok > 0 else None
+    else:
+        # Fallback: compute from n_predict and target total time
+        m_np = re.search(r"n_predict\s*=\s*(\d+)", raw)
+        n_predict = int(m_np.group(1)) if m_np else None
+        target_section = raw.split("target:")[-1] if "target:" in raw else raw
+        m_total = re.search(r"total time\s*=\s*([\d.]+)\s*ms", target_section)
+        if m_total and n_predict and n_predict > 0:
+            total_ms = float(m_total.group(1))
+            result["tokens_per_sec"] = n_predict / (total_ms / 1000.0)
+            result["eval_ms_per_token"] = total_ms / n_predict
     return result
 
 # ── CSV writer ────────────────────────────────────────────────────────────────

@@ -1,0 +1,24 @@
+{
+  "bins": {
+    "llama-bench": "/Users/alex/Documents/mlx-community/llama.cpp/build/bin/llama-bench",
+    "llama-cli": "/Users/alex/Documents/mlx-community/llama.cpp/build/bin/llama-cli",
+    "llama-speculative": "/Users/alex/Documents/mlx-community/llama.cpp/build/bin/llama-speculative",
+    "llama-server": "/Users/alex/Documents/mlx-community/llama.cpp/build/bin/llama-server"
+  },
+  "models": {
+    "moe_q4": "/Users/alex/Documents/mlx-community/Qwen3.5-35B-A3B-GGUF-UD-Q4_K_XL/Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf",
+    "moe_q8": "/Users/alex/Documents/mlx-community/Qwen3.5-35B-A3B-GGUF-UD-Q8_K_XL/Qwen3.5-35B-A3B-UD-Q8_K_XL.gguf",
+    "draft_0.8b": "/Users/alex/Documents/mlx-community/Qwen3.5-0.8B-GGUF-UD-Q8_K_XL/Qwen3.5-0.8B-UD-Q8_K_XL.gguf",
+    "draft_2b": "/Users/alex/Documents/mlx-community/Qwen3.5-2B-GGUF-UD-Q8_K_L/Qwen3.5-2B-UD-Q8_K_XL.gguf",
+    "dense_0.8b": "/Users/alex/Documents/mlx-community/Qwen3.5-0.8B/Qwen3.5-0.8B-bf16.gguf",
+    "dense_2b": "/Users/alex/Documents/mlx-community/Qwen3.5-2B-GGUF-UD-Q8_K_L/Qwen3.5-2B-UD-Q8_K_XL.gguf",
+    "dense_4b": "/Users/alex/Documents/mlx-community/Qwen3.5-4B-quants/Qwen3.5-4B-Q8_0.gguf",
+    "dense_9b": "/Users/alex/Documents/mlx-community/Qwen3.5-9B/Qwen3.5-9B-bf16.gguf"
+  },
+  "ssh_ok": {
+    "m2ultra": true,
+    "m1max": true,
+    "m2pro": false
+  },
+  "results_dir": "/Users/alex/Documents/Codes/speculative-moe-research/results"
+}

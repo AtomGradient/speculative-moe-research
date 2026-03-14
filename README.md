@@ -1,124 +1,103 @@
-# MoE vs Speculative Decoding — Experiment Suite
-## Research question
-When MoE active-parameter count is low (e.g. 3B active out of 35B total),
-does Speculative Decoding still provide meaningful speedup?
+# Does Speculative Decoding Help Mixture-of-Experts?
+
+> **Work in Progress** — This research is ongoing. Results and conclusions may be updated as additional optimizations are implemented and validated.
+
+*By [AtomGradient](https://github.com/AtomGradient)*
+
+## Research Question
+
+When MoE active-parameter count is low (e.g., 3B active out of 35B total), does Speculative Decoding still provide meaningful speedup?
+
+**Answer:** Yes — SD provides **1.18–1.30× speedup** on MoE models despite very low acceptance rates (<4%), driven by batch verification efficiency rather than draft token acceptance.
 
 ---
 
-## Prerequisites (one-time, do first)
+## Key Results
+
+| Target Model | Draft | γ | Throughput | Speedup | Acceptance |
+|-------------|-------|---|-----------|---------|------------|
+| **MoE Q4 (35B-A3B)** | 0.8B | 8 | 65.2 tok/s | **1.18×** | 1.1% |
+| **MoE Q4 (35B-A3B)** | 0.8B | 16 | 69.7 tok/s | **1.26×** | 0.2% |
+| **MoE Q8 (35B-A3B)** | 0.8B | 16 | 64.8 tok/s | **1.30×** | 0.2% |
+| Dense 4B | 0.8B | 16 | 75.1 tok/s | 1.12× | 0.4% |
+| Dense 9B | 0.8B | 16 | 67.7 tok/s | **2.03×** | 0.4% |
+
+**Baseline throughput (no SD):** MoE Q4: 55.3 tok/s | MoE Q8: 49.9 tok/s | Dense 4B: 67.2 tok/s | Dense 9B: 33.4 tok/s
+
+### Key Findings
+
+1. **SD works for MoE** — 1.18–1.30× speedup despite <4% draft acceptance, through batch verification efficiency
+2. **Total params drive SD benefit** — speedup scales with memory bandwidth (total params), not active params
+3. **Smaller draft is better** — 0.8B draft outperforms 2B due to lower compute overhead
+4. **Larger γ is optimal** — γ=16 gives best speedup despite lowest acceptance (batch cost grows sub-linearly)
+
+---
+
+## Publication
+
+- **Paper**: [Download PDF](https://atomgradient.github.io/speculative-moe-research/paper.pdf)
+- **Website**: [https://atomgradient.github.io/speculative-moe-research/](https://atomgradient.github.io/speculative-moe-research/)
+
+---
+
+## Hardware
+
+| Component | Specification |
+|-----------|--------------|
+| Chip | Apple M2 Ultra |
+| Memory | 192 GB Unified (LPDDR5) |
+| Bandwidth | 800 GB/s |
+| Framework | llama.cpp v8240/8280 (Metal) |
+
+---
+
+## Reproduce
 
 ```bash
-# 1. Activate the shared Python env
+# 1. Activate Python env
 source ~/Documents/mlx-community/3-11-mlx-community-env/bin/activate
 
-# 2. Install analysis deps (fast, no GPU needed)
-pip install -r ~/speculative-moe-research/requirements.txt
+# 2. Install dependencies
+pip install -r requirements.txt
 
-# 3. Build llama.cpp if not already built
-cd ~/Documents/mlx-community/llama.cpp
-cmake -B build -DLLAMA_METAL=ON && cmake --build build -j$(sysctl -n hw.logicalcpu)
-```
-
----
-
-## Execution order
-
-### Step 0 — Discover & verify (run once)
-```bash
-cd ~/speculative-moe-research
+# 3. Discover models and verify environment
 python3 00_discover.py
-```
-Checks binaries, finds all .gguf files, tests SSH to m1max + m2pro.
-Writes `discovered_paths.json`. Fix any errors before proceeding.
 
-**If SSH hostnames differ**, edit `config.py`:
-```python
-MACHINES = {
-    "m1max": {"host": "YOUR_M1MAX_HOSTNAME.local", ...},
-    "m2pro": {"host": "YOUR_M2PRO_HOSTNAME.local", ...},
-}
-```
+# 4. Run all experiments (~40 min on M2 Ultra)
+python3 01_run_experiments.py --suites A B C D F
 
----
-
-### Step 1 — Run experiments
-
-**Quick smoke test (10 min) — run Suite A only:**
-```bash
-python3 01_run_experiments.py --suites A
-```
-
-**Full experiment matrix (estimated ~4-6 hours total):**
-```bash
-# Recommended: run suites in parallel across machines
-# Suite A+B on M2 Ultra (MoE experiments):
-python3 01_run_experiments.py --suites A B
-
-# Suite C+D on remotes (dense baselines) — open new terminal:
-python3 01_run_experiments.py --suites C D
-
-# Suite F last (prompt sweep):
-python3 01_run_experiments.py --suites F
-```
-
-Results accumulate in `results/csv/runs.csv` in real time.
-Raw llama.cpp output saved to `results/raw/<job_id>.txt`.
-
----
-
-### Step 2 — Analyze & plot
-```bash
+# 5. Analyze and generate plots
 python3 02_analyze.py
 ```
-Produces:
-- `results/csv/summary.csv` — aggregated table for the paper
-- `results/plots/fig1_speedup_curve.png` — SD speedup vs active params (main result)
-- `results/plots/fig2_acceptance_rate.png` — acceptance rate vs γ
-- `results/plots/fig3_moe_vs_dense.png` — raw throughput comparison
-- `results/plots/fig4_prompt_sweep.png` — speedup vs prompt length
 
-You can re-run `02_analyze.py` at any time on partial data.
+## Experiment Matrix
 
----
+| Suite | Description | Runs |
+|-------|-------------|------|
+| A | MoE baseline (no SD) | 18 |
+| B | MoE + SD (2 drafts × 3 γ × 4 prompts) | 144 |
+| C | Dense baselines (no SD) | 36 |
+| D | Dense + SD (4B/9B + 0.8B draft) | 72 |
+| F | Prompt-length sweep (MoE Q4) | 36 |
+| **Total** | | **306** |
 
-## Experiment matrix
+## Key Files
 
-| Suite | Target | Draft | Variable | Machine | Est. time |
-|-------|--------|-------|----------|---------|-----------|
-| A | MoE 35B Q4+Q8 | — | prompt len | M2 Ultra | 30 min |
-| B | MoE 35B Q4+Q8 | 0.8B / 2B | γ ∈ {4,8,16} × 4 prompts | M2 Ultra | 2-3 hr |
-| C | Dense 0.8B–9B | — | prompt len | M1MAX/M2Pro | 40 min |
-| D | Dense 4B / 9B | 0.8B | γ ∈ {4,8,16} | M1MAX/M2Pro | 1 hr |
-| F | MoE Q4 | 0.8B | prompt tokens {32…1024} | M2 Ultra | 30 min |
-
----
-
-## Key files
 ```
 speculative-moe-research/
-├── config.py               ← edit hostnames / model paths here
+├── config.py               ← model paths, machine config
 ├── 00_discover.py          ← environment check
-├── 01_run_experiments.py   ← main runner
+├── 01_run_experiments.py   ← experiment runner
 ├── 02_analyze.py           ← analysis + plots
 ├── requirements.txt
-├── discovered_paths.json   ← written by 00_discover.py
+├── docs/
+│   ├── paper.tex           ← LaTeX source
+│   ├── paper.pdf           ← compiled paper
+│   └── index.html          ← GitHub Pages site (bilingual)
 └── results/
     ├── csv/
-    │   ├── runs.csv        ← live data during experiments
-    │   └── summary.csv     ← aggregated (written by analyze)
+    │   ├── runs.csv        ← raw experiment data (306 rows)
+    │   └── summary.csv     ← aggregated summary
     ├── raw/                ← raw llama.cpp output per job
-    └── plots/              ← paper figures
+    └── plots/              ← paper figures (5 plots)
 ```
-
----
-
-## Interpreting results
-
-The central claim of our paper is tested by **Fig 1**:
-- If the MoE ★ point falls **below** the dense trend line → MoE's sparse activation
-  reduces SD gains (supports the hypothesis).
-- If it falls **on or above** the line → SD is still valuable for MoE despite low
-  active params (rejects the hypothesis; suggests the mechanisms are orthogonal).
-
-**Fig 4** shows whether the memory-bandwidth regime shift (short vs long prompt)
-changes the conclusion — critical for determining when SD is beneficial.

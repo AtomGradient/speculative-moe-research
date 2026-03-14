@@ -18,7 +18,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from config import HOME, LLAMA_BIN, MACHINES, MODEL_ROOT, MODELS, PYTHON_ENV
 
-RESULTS_DIR = Path(HOME) / "speculative-moe-research" / "results"
+from config import RESULTS_DIR as _RESULTS_DIR
+RESULTS_DIR = Path(_RESULTS_DIR)
 OUT_FILE = Path(__file__).parent / "discovered_paths.json"
 
 # ANSI colours
@@ -67,13 +68,21 @@ for m in MODELS:
     if not gguf_files:
         print(err(f"{m['label']}  no .gguf in {model_dir}"))
         continue
-    # prefer Q4_K or Q8_K main shard; fall back to first file
+    # prefer Q8 > Q4 > main shard; fall back to first file
     chosen = gguf_files[0]
+    best_priority = -1
     for f in gguf_files:
         n = f.name.lower()
-        if "00001" in n or ("q4" in n and "split" not in n) or ("q8" in n and "split" not in n):
+        if "split" in n:
+            continue
+        pri = 0
+        if "q8" in n: pri = 3
+        elif "bf16" in n: pri = 2
+        elif "q4" in n: pri = 1
+        elif "00001" in n: pri = 1
+        if pri > best_priority:
+            best_priority = pri
             chosen = f
-            break
     found_models[m["id"]] = str(chosen)
     size_gb = chosen.stat().st_size / 1e9
     print(ok(f"{m['label']:40s}  {chosen.name}  ({size_gb:.1f} GB)"))

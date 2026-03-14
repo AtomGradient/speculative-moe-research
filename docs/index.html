@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Speculative Decoding on MoE Models — AtomGradient</title>
+<style>
+:root {
+  --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+  --fg: #c9d1d9; --fg2: #8b949e; --accent: #58a6ff;
+  --accent2: #f0883e; --moe: #a371f7; --dense: #3fb950;
+  --red: #f85149; --border: #30363d; --card-bg: #161b22;
+}
+html[lang="zh"] .e { display: none !important; }
+html[lang="en"] .z { display: none !important; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); line-height: 1.6; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.container { max-width: 1100px; margin: 0 auto; padding: 0 20px; }
+
+/* Nav */
+nav { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 12px 0; position: sticky; top: 0; z-index: 100; }
+nav .container { display: flex; justify-content: space-between; align-items: center; }
+nav .brand { font-weight: 700; font-size: 1rem; color: var(--fg); }
+nav .brand span { color: var(--accent); }
+nav .links { display: flex; gap: 16px; align-items: center; font-size: 0.9rem; }
+nav .links a { color: var(--fg2); }
+nav .links a:hover { color: var(--fg); }
+.lang-toggle { display: flex; gap: 4px; margin-left: 12px; }
+.lang-toggle button { background: var(--bg3); color: var(--fg2); border: 1px solid var(--border); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
+.lang-toggle button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Hero */
+.hero { padding: 60px 0 40px; text-align: center; }
+.hero h1 { font-size: 2rem; margin-bottom: 8px; }
+.hero h1 .moe { color: var(--moe); }
+.hero .subtitle { font-size: 1.1rem; color: var(--fg2); margin-bottom: 24px; }
+.badge { display: inline-block; background: var(--bg3); border: 1px solid var(--border); padding: 4px 12px; border-radius: 16px; font-size: 0.8rem; color: var(--fg2); margin: 4px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 32px; }
+.stat-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; }
+.stat-card .number { font-size: 2rem; font-weight: 800; }
+.stat-card .number.moe { color: var(--moe); }
+.stat-card .number.dense { color: var(--dense); }
+.stat-card .number.red { color: var(--red); }
+.stat-card .number.accent { color: var(--accent); }
+.stat-card .label { font-size: 0.85rem; color: var(--fg2); margin-top: 4px; }
+
+/* Sections */
+section { padding: 48px 0; }
+section h2 { font-size: 1.5rem; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+section h3 { font-size: 1.2rem; margin: 20px 0 10px; color: var(--accent); }
+
+/* Findings */
+.findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 16px; }
+.finding-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; border-left: 4px solid var(--accent); }
+.finding-card h4 { font-size: 1rem; margin-bottom: 8px; }
+.finding-card p { font-size: 0.9rem; color: var(--fg2); }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 0.9rem; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+th { background: var(--bg3); color: var(--fg); font-weight: 600; }
+tr:hover { background: var(--bg2); }
+.moe-row { color: var(--moe); font-weight: 600; }
+.dense-row { color: var(--dense); }
+
+/* Figures */
+.figure { margin: 24px 0; text-align: center; }
+.figure img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
+.figure .caption { font-size: 0.85rem; color: var(--fg2); margin-top: 8px; max-width: 800px; margin-left: auto; margin-right: auto; }
+.fig-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; }
+
+/* Footer */
+footer { background: var(--bg2); border-top: 1px solid var(--border); padding: 32px 0; text-align: center; margin-top: 40px; }
+footer p { margin: 6px 0; font-size: 0.9rem; color: var(--fg2); }
+footer .wip { color: var(--accent2); font-size: 0.8rem; }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+<div class="container">
+  <div class="brand"><span>AtomGradient</span> · SD on MoE</div>
+  <div class="links">
+    <a href="#results"><span class="e">Results</span><span class="z">结果</span></a>
+    <a href="#figures"><span class="e">Figures</span><span class="z">图表</span></a>
+    <a href="#hardware"><span class="e">Hardware</span><span class="z">硬件</span></a>
+    <a href="paper.pdf"><span class="e">Paper</span><span class="z">论文</span></a>
+    <div class="lang-toggle">
+      <button id="btn-en" class="active" onclick="setLang('en')">EN</button>
+      <button id="btn-zh" onclick="setLang('zh')">中文</button>
+    </div>
+  </div>
+</div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+<div class="container">
+  <h1>
+    <span class="e">Does Speculative Decoding Help <span class="moe">Mixture-of-Experts</span>?</span>
+    <span class="z">推测解码对<span class="moe">混合专家模型</span>有帮助吗？</span>
+  </h1>
+  <p class="subtitle">
+    <span class="e">An Empirical Study on Qwen3.5-35B-A3B with Apple Silicon</span>
+    <span class="z">基于 Qwen3.5-35B-A3B 和 Apple Silicon 的实证研究</span>
+  </p>
+  <div>
+    <span class="badge">Qwen3.5-35B-A3B</span>
+    <span class="badge">Apple M2 Ultra · 192GB</span>
+    <span class="badge">llama.cpp</span>
+    <span class="badge">306 runs</span>
+  </div>
+  <div class="stats">
+    <div class="stat-card">
+      <div class="number moe">1.18–1.30×</div>
+      <div class="label"><span class="e">MoE SD Speedup</span><span class="z">MoE 推测解码加速</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="number red">&lt;4%</div>
+      <div class="label"><span class="e">Draft Acceptance Rate</span><span class="z">草稿接受率</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="number dense">2.03×</div>
+      <div class="label"><span class="e">Best Dense Speedup (9B)</span><span class="z">最佳 Dense 加速 (9B)</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="number accent">55.3→69.7</div>
+      <div class="label"><span class="e">MoE Q4 tok/s (baseline→SD)</span><span class="z">MoE Q4 吞吐 (基线→SD)</span></div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- KEY FINDINGS -->
+<section>
+<div class="container">
+  <h2><span class="e">Key Findings</span><span class="z">核心发现</span></h2>
+  <div class="findings">
+    <div class="finding-card">
+      <h4><span class="e">SD Works for MoE</span><span class="z">SD 对 MoE 有效</span></h4>
+      <p><span class="e">Despite very low acceptance rates (&lt;4%), speculative decoding provides 1.18–1.30× speedup on MoE models through batch verification efficiency.</span>
+      <span class="z">尽管接受率极低（&lt;4%），推测解码通过批量验证效率仍能为 MoE 模型提供 1.18–1.30× 加速。</span></p>
+    </div>
+    <div class="finding-card">
+      <h4><span class="e">Total Params Matter</span><span class="z">总参数量决定效果</span></h4>
+      <p><span class="e">SD speedup scales with total parameter footprint (memory bandwidth), not active parameters. MoE (35B total, 3B active) behaves like a 4–9B dense model.</span>
+      <span class="z">SD 加速与总参数量（内存带宽）成正比，而非活跃参数量。MoE（35B 总量，3B 活跃）表现类似 4-9B 的 Dense 模型。</span></p>
+    </div>
+    <div class="finding-card">
+      <h4><span class="e">Smaller Draft = Better</span><span class="z">更小的 Draft 更好</span></h4>
+      <p><span class="e">The 0.8B draft outperforms the 2B draft — lower compute overhead preserves more batch verification benefit.</span>
+      <span class="z">0.8B 草稿模型优于 2B — 更低的计算开销保留了更多批量验证收益。</span></p>
+    </div>
+    <div class="finding-card">
+      <h4><span class="e">Larger γ = More Speedup</span><span class="z">更大的 γ = 更大加速</span></h4>
+      <p><span class="e">Counterintuitively, γ=16 gives the best speedup (1.30×) despite lowest acceptance (0.2%), because batch verification cost grows sub-linearly.</span>
+      <span class="z">反直觉地，γ=16 提供最佳加速（1.30×），尽管接受率最低（0.2%），因为批量验证成本增长低于线性。</span></p>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- RESULTS TABLE -->
+<section id="results">
+<div class="container">
+  <h2><span class="e">Results</span><span class="z">实验结果</span></h2>
+
+  <h3><span class="e">Baseline Throughput (No Speculative Decoding)</span><span class="z">基线吞吐量（无推测解码）</span></h3>
+  <table>
+    <thead>
+      <tr>
+        <th><span class="e">Model</span><span class="z">模型</span></th>
+        <th><span class="e">Active Params</span><span class="z">活跃参数</span></th>
+        <th><span class="e">Total Params</span><span class="z">总参数</span></th>
+        <th><span class="e">Throughput (tok/s)</span><span class="z">吞吐量 (tok/s)</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="dense-row"><td>Dense 0.8B</td><td>0.8B</td><td>0.8B</td><td>138.0 ± 0.3</td></tr>
+      <tr class="dense-row"><td>Dense 2B</td><td>2.0B</td><td>2.0B</td><td>110.4 ± 0.3</td></tr>
+      <tr class="moe-row"><td>MoE Q4 (35B-A3B)</td><td>3.0B</td><td>35B</td><td>55.3 ± 0.1</td></tr>
+      <tr class="moe-row"><td>MoE Q8 (35B-A3B)</td><td>3.0B</td><td>35B</td><td>49.9 ± 0.1</td></tr>
+      <tr class="dense-row"><td>Dense 4B</td><td>4.0B</td><td>4.0B</td><td>67.2 ± 0.1</td></tr>
+      <tr class="dense-row"><td>Dense 9B</td><td>9.0B</td><td>9.0B</td><td>33.4 ± 0.0</td></tr>
+    </tbody>
+  </table>
+
+  <h3><span class="e">Speculative Decoding Results (Draft: 0.8B)</span><span class="z">推测解码结果（Draft: 0.8B）</span></h3>
+  <table>
+    <thead>
+      <tr>
+        <th><span class="e">Target</span><span class="z">目标模型</span></th>
+        <th>γ</th>
+        <th>tok/s</th>
+        <th><span class="e">Speedup</span><span class="z">加速比</span></th>
+        <th><span class="e">Acceptance α</span><span class="z">接受率 α</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="moe-row"><td>MoE Q4</td><td>4</td><td>63.4</td><td>1.15×</td><td>2.6%</td></tr>
+      <tr class="moe-row"><td>MoE Q4</td><td>8</td><td>65.2</td><td>1.18×</td><td>1.1%</td></tr>
+      <tr class="moe-row"><td>MoE Q4</td><td>16</td><td>69.7</td><td>1.26×</td><td>0.2%</td></tr>
+      <tr class="moe-row"><td>MoE Q8</td><td>4</td><td>57.5</td><td>1.15×</td><td>2.7%</td></tr>
+      <tr class="moe-row"><td>MoE Q8</td><td>8</td><td>60.9</td><td>1.22×</td><td>1.0%</td></tr>
+      <tr class="moe-row"><td>MoE Q8</td><td>16</td><td>64.8</td><td>1.30×</td><td>0.2%</td></tr>
+      <tr class="dense-row"><td>Dense 4B</td><td>4</td><td>70.9</td><td>1.05×</td><td>3.0%</td></tr>
+      <tr class="dense-row"><td>Dense 4B</td><td>8</td><td>65.9</td><td>0.98×</td><td>1.1%</td></tr>
+      <tr class="dense-row"><td>Dense 4B</td><td>16</td><td>75.1</td><td>1.12×</td><td>0.4%</td></tr>
+      <tr class="dense-row"><td>Dense 9B</td><td>4</td><td>32.8</td><td>0.98×</td><td>2.3%</td></tr>
+      <tr class="dense-row"><td>Dense 9B</td><td>8</td><td>55.0</td><td>1.64×</td><td>0.9%</td></tr>
+      <tr class="dense-row"><td>Dense 9B</td><td>16</td><td>67.7</td><td>2.03×</td><td>0.4%</td></tr>
+    </tbody>
+  </table>
+</div>
+</section>
+
+<!-- FIGURES -->
+<section id="figures">
+<div class="container">
+  <h2><span class="e">Figures</span><span class="z">图表</span></h2>
+
+  <div class="figure">
+    <img src="../results/plots/fig1_speedup_curve.png" alt="Speedup vs Active Parameters">
+    <div class="caption">
+      <span class="e"><strong>Figure 1:</strong> SD speedup vs active parameter count (draft: 0.8B, γ=8). MoE ★ points at 3B active fall above Dense 4B, showing that total parameter footprint (memory bandwidth) drives SD benefit.</span>
+      <span class="z"><strong>图1：</strong>SD 加速比与活跃参数数量（draft: 0.8B, γ=8）。MoE ★ 点位于 Dense 4B 之上，表明总参数量（内存带宽）决定了 SD 收益。</span>
+    </div>
+  </div>
+
+  <div class="fig-grid">
+    <div class="figure">
+      <img src="../results/plots/fig3_moe_vs_dense.png" alt="Throughput Comparison">
+      <div class="caption">
+        <span class="e"><strong>Figure 2:</strong> Absolute throughput comparison across models and SD configurations.</span>
+        <span class="z"><strong>图2：</strong>各模型及 SD 配置的绝对吞吐量对比。</span>
+      </div>
+    </div>
+    <div class="figure">
+      <img src="../results/plots/fig2_acceptance_rate.png" alt="Acceptance Rate">
+      <div class="caption">
+        <span class="e"><strong>Figure 3:</strong> Draft acceptance rate vs draft length γ. All models show &lt;4% acceptance.</span>
+        <span class="z"><strong>图3：</strong>草稿接受率与草稿长度 γ 的关系。所有模型接受率均 &lt;4%。</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="fig-grid">
+    <div class="figure">
+      <img src="../results/plots/fig4_prompt_sweep.png" alt="Prompt Length Sweep">
+      <div class="caption">
+        <span class="e"><strong>Figure 4:</strong> SD speedup vs prompt length on MoE Q4. Benefit is stable (1.19–1.26×).</span>
+        <span class="z"><strong>图4：</strong>MoE Q4 上 SD 加速比与 prompt 长度的关系。收益稳定（1.19-1.26×）。</span>
+      </div>
+    </div>
+    <div class="figure">
+      <img src="../results/plots/fig5_speedup_by_gamma.png" alt="Speedup by Gamma">
+      <div class="caption">
+        <span class="e"><strong>Figure 5:</strong> Speedup vs draft length γ by target model. Larger γ benefits all models.</span>
+        <span class="z"><strong>图5：</strong>各目标模型的加速比与草稿长度 γ 的关系。更大的 γ 对所有模型都有利。</span>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- HARDWARE -->
+<section id="hardware">
+<div class="container">
+  <h2><span class="e">Hardware</span><span class="z">硬件配置</span></h2>
+  <table>
+    <thead>
+      <tr>
+        <th><span class="e">Component</span><span class="z">组件</span></th>
+        <th><span class="e">Specification</span><span class="z">规格</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Chip</td><td>Apple M2 Ultra</td></tr>
+      <tr><td><span class="e">Memory</span><span class="z">内存</span></td><td>192 GB Unified (LPDDR5)</td></tr>
+      <tr><td><span class="e">Memory Bandwidth</span><span class="z">内存带宽</span></td><td>800 GB/s</td></tr>
+      <tr><td>GPU Cores</td><td>76</td></tr>
+      <tr><td>CPU Cores</td><td>24 (16P + 8E)</td></tr>
+      <tr><td>Framework</td><td>llama.cpp v8240/8280 (Metal)</td></tr>
+      <tr><td><span class="e">Total Runs</span><span class="z">总运行次数</span></td><td>306</td></tr>
+    </tbody>
+  </table>
+</div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+<div class="container">
+  <p><strong>AtomGradient</strong> &middot;
+    <span class="e">March 2026 &middot; Apple M2 Ultra &middot; llama.cpp</span>
+    <span class="z">2026年3月 &middot; Apple M2 Ultra &middot; llama.cpp</span>
+  </p>
+  <p class="wip">
+    <span class="e">&#9888; Work in Progress &mdash; This research is ongoing. Results and conclusions may be updated.</span>
+    <span class="z">&#9888; 研究进行中 &mdash; 本研究尚未完成，结果和结论可能会更新。</span>
+  </p>
+  <p><a href="paper.pdf"><span class="e">Download Paper (PDF)</span><span class="z">下载论文 (PDF)</span></a> &middot;
+     <a href="https://github.com/AtomGradient/speculative-moe-research">GitHub</a></p>
+</div>
+</footer>
+
+<script>
+function setLang(lang) {
+  document.documentElement.lang = lang;
+  document.getElementById('btn-en').classList.toggle('active', lang === 'en');
+  document.getElementById('btn-zh').classList.toggle('active', lang === 'zh');
+  localStorage.setItem('lang', lang);
+}
+// Restore saved language
+const saved = localStorage.getItem('lang');
+if (saved) setLang(saved);
+</script>
+</body>
+</html>

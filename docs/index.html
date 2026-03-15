@@ -146,7 +146,9 @@ tr:hover { background: rgba(255,255,255,0.02); }
 .moe-row { color: var(--moe); font-weight: 600; }
 .dense-row { color: var(--dense); }
 .best-row { background: var(--moe-bg); }
-td.num { font-variant-numeric: tabular-nums; text-align: right; }
+th.num, td.num { font-variant-numeric: tabular-nums; text-align: right; }
+.grp-l { border-left: 1px dashed var(--fg3) !important; }
+.grp-r { border-right: 1px dashed var(--fg3) !important; }
 
 /* ── Figures ───────────────────────────────────────────────────────────────── */
 .figure { margin: 28px 0; }
@@ -473,17 +475,17 @@ footer a { color: var(--accent); }
         <th><span class="e">Model</span><span class="z">模型</span></th>
         <th><span class="e">Active</span><span class="z">活跃参数</span></th>
         <th><span class="e">Total</span><span class="z">总参数</span></th>
-        <th>tok/s</th>
+        <th class="num">tok/s</th>
         <th><span class="e">Note</span><span class="z">备注</span></th>
       </tr>
     </thead>
     <tbody>
-      <tr class="dense-row"><td>Dense 0.8B</td><td>0.8B</td><td>0.8B</td><td class="num">138.0</td><td class="e" style="color:var(--fg3)">Draft model (fastest)</td><td class="z" style="color:var(--fg3)">草稿模型（最快）</td></tr>
-      <tr class="dense-row"><td>Dense 2B</td><td>2.0B</td><td>2.0B</td><td class="num">110.4</td><td class="e" style="color:var(--fg3)">Larger draft</td><td class="z" style="color:var(--fg3)">较大的草稿模型</td></tr>
-      <tr class="moe-row"><td>★ MoE Q4 (35B-A3B)</td><td>3.0B</td><td>35B</td><td class="num">55.3</td><td class="e" style="color:var(--fg3)">3B active but 35B in memory</td><td class="z" style="color:var(--fg3)">3B活跃但35B占内存</td></tr>
-      <tr class="moe-row"><td>★ MoE Q8 (35B-A3B)</td><td>3.0B</td><td>35B</td><td class="num">49.9</td><td class="e" style="color:var(--fg3)">Higher precision, larger file</td><td class="z" style="color:var(--fg3)">更高精度，文件更大</td></tr>
-      <tr class="dense-row"><td>Dense 4B</td><td>4.0B</td><td>4.0B</td><td class="num">67.2</td><td class="e" style="color:var(--fg3)">More active params than MoE, but faster!</td><td class="z" style="color:var(--fg3)">活跃参数比MoE多，但反而更快！</td></tr>
-      <tr class="dense-row"><td>Dense 9B</td><td>9.0B</td><td>9.0B</td><td class="num">33.4</td><td class="e" style="color:var(--fg3)">Most bandwidth-bound</td><td class="z" style="color:var(--fg3)">最受带宽限制</td></tr>
+      <tr class="dense-row"><td>Dense 0.8B</td><td>0.8B</td><td>0.8B</td><td class="num">138.0</td><td style="color:var(--fg3)"><span class="e">Draft model (fastest)</span><span class="z">草稿模型（最快）</span></td></tr>
+      <tr class="dense-row"><td>Dense 2B</td><td>2.0B</td><td>2.0B</td><td class="num">110.4</td><td style="color:var(--fg3)"><span class="e">Larger draft</span><span class="z">较大的草稿模型</span></td></tr>
+      <tr class="moe-row"><td>★ MoE Q4 (35B-A3B)</td><td>3.0B</td><td>35B</td><td class="num">55.3</td><td style="color:var(--fg3)"><span class="e">3B active but 35B in memory</span><span class="z">3B活跃但35B占内存</span></td></tr>
+      <tr class="moe-row"><td>★ MoE Q8 (35B-A3B)</td><td>3.0B</td><td>35B</td><td class="num">49.9</td><td style="color:var(--fg3)"><span class="e">Higher precision, larger file</span><span class="z">更高精度，文件更大</span></td></tr>
+      <tr class="dense-row"><td>Dense 4B</td><td>4.0B</td><td>4.0B</td><td class="num">67.2</td><td style="color:var(--fg3)"><span class="e">More active params than MoE, but faster!</span><span class="z">活跃参数比MoE多，但反而更快！</span></td></tr>
+      <tr class="dense-row"><td>Dense 9B</td><td>9.0B</td><td>9.0B</td><td class="num">33.4</td><td style="color:var(--fg3)"><span class="e">Most bandwidth-bound</span><span class="z">最受带宽限制</span></td></tr>
     </tbody>
   </table>
   </div>
@@ -510,9 +512,9 @@ footer a { color: var(--accent); }
       <tr>
         <th><span class="e">Target</span><span class="z">目标模型</span></th>
         <th>γ</th>
-        <th>tok/s</th>
-        <th><span class="e">Speedup</span><span class="z">加速</span></th>
-        <th><span class="e">Acceptance</span><span class="z">接受率</span></th>
+        <th class="num">tok/s</th>
+        <th class="num"><span class="e">Speedup</span><span class="z">加速</span></th>
+        <th class="num"><span class="e">Acceptance</span><span class="z">接受率</span></th>
       </tr>
     </thead>
     <tbody>
@@ -540,27 +542,26 @@ footer a { color: var(--accent); }
   <table>
     <thead>
       <tr>
-        <th><span class="e">Target / γ</span><span class="z">目标 / γ</span></th>
-        <th colspan="2"><span class="e">Draft 0.8B</span><span class="z">草稿 0.8B</span></th>
-        <th colspan="2"><span class="e">Draft 2B</span><span class="z">草稿 2B</span></th>
-        <th><span class="e">Winner</span><span class="z">胜出</span></th>
+        <th rowspan="2"><span class="e">Target</span><span class="z">目标模型</span></th>
+        <th rowspan="2">γ</th>
+        <th colspan="2" class="grp-l grp-r"><span class="e">Draft 0.8B</span><span class="z">草稿 0.8B</span></th>
+        <th colspan="2" class="grp-l grp-r"><span class="e">Draft 2B</span><span class="z">草稿 2B</span></th>
+        <th rowspan="2"><span class="e">Winner</span><span class="z">胜出</span></th>
       </tr>
       <tr>
-        <th></th>
-        <th><span class="e">Speedup</span><span class="z">加速</span></th>
-        <th>α</th>
-        <th><span class="e">Speedup</span><span class="z">加速</span></th>
-        <th>α</th>
-        <th></th>
+        <th class="num grp-l"><span class="e">Speedup</span><span class="z">加速</span></th>
+        <th class="num grp-r"><span class="e">Acceptance</span><span class="z">接受率</span></th>
+        <th class="num grp-l"><span class="e">Speedup</span><span class="z">加速</span></th>
+        <th class="num grp-r"><span class="e">Acceptance</span><span class="z">接受率</span></th>
       </tr>
     </thead>
     <tbody>
-      <tr class="moe-row"><td>MoE Q4 / γ=4</td><td class="num">1.15×</td><td class="num">2.6%</td><td class="num">1.03×</td><td class="num">4.0%</td><td>0.8B ✓</td></tr>
-      <tr class="moe-row"><td>MoE Q4 / γ=8</td><td class="num">1.18×</td><td class="num">1.1%</td><td class="num">1.05×</td><td class="num">1.7%</td><td>0.8B ✓</td></tr>
-      <tr class="moe-row"><td>MoE Q4 / γ=16</td><td class="num">1.26×</td><td class="num">0.2%</td><td class="num">1.12×</td><td class="num">0.9%</td><td>0.8B ✓</td></tr>
-      <tr class="moe-row"><td>MoE Q8 / γ=4</td><td class="num">1.15×</td><td class="num">2.7%</td><td class="num">1.03×</td><td class="num">3.6%</td><td>0.8B ✓</td></tr>
-      <tr class="moe-row"><td>MoE Q8 / γ=8</td><td class="num">1.22×</td><td class="num">1.0%</td><td class="num">1.09×</td><td class="num">2.0%</td><td>0.8B ✓</td></tr>
-      <tr class="moe-row"><td>MoE Q8 / γ=16</td><td class="num">1.30×</td><td class="num">0.2%</td><td class="num">1.16×</td><td class="num">0.9%</td><td>0.8B ✓</td></tr>
+      <tr class="moe-row"><td>MoE Q4</td><td>4</td><td class="num grp-l">1.15×</td><td class="num grp-r">2.6%</td><td class="num grp-l">1.03×</td><td class="num grp-r">4.0%</td><td>0.8B ✓</td></tr>
+      <tr class="moe-row"><td>MoE Q4</td><td>8</td><td class="num grp-l">1.18×</td><td class="num grp-r">1.1%</td><td class="num grp-l">1.05×</td><td class="num grp-r">1.7%</td><td>0.8B ✓</td></tr>
+      <tr class="moe-row"><td>MoE Q4</td><td>16</td><td class="num grp-l">1.26×</td><td class="num grp-r">0.2%</td><td class="num grp-l">1.12×</td><td class="num grp-r">0.9%</td><td>0.8B ✓</td></tr>
+      <tr class="moe-row"><td>MoE Q8</td><td>4</td><td class="num grp-l">1.15×</td><td class="num grp-r">2.7%</td><td class="num grp-l">1.03×</td><td class="num grp-r">3.6%</td><td>0.8B ✓</td></tr>
+      <tr class="moe-row"><td>MoE Q8</td><td>8</td><td class="num grp-l">1.22×</td><td class="num grp-r">1.0%</td><td class="num grp-l">1.09×</td><td class="num grp-r">2.0%</td><td>0.8B ✓</td></tr>
+      <tr class="moe-row"><td>MoE Q8</td><td>16</td><td class="num grp-l">1.30×</td><td class="num grp-r">0.2%</td><td class="num grp-l">1.16×</td><td class="num grp-r">0.9%</td><td>0.8B ✓</td></tr>
     </tbody>
   </table>
   </div>

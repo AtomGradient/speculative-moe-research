@@ -1,8 +1,8 @@
 # Does Speculative Decoding Help Mixture-of-Experts?
 
-> **Work in Progress** — This research is ongoing. Results and conclusions may be updated as additional optimizations are implemented and validated.
+> This research is ongoing. Results and conclusions may be updated as additional optimizations are implemented and validated.
 
-*By [AtomGradient](https://github.com/AtomGradient)*
+*By [AtomGradient](https://www.atomgradient.com/en)*
 
 ---
 ## Publication

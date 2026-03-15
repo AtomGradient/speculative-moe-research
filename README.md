@@ -4,6 +4,14 @@
 
 *By [AtomGradient](https://github.com/AtomGradient)*
 
+---
+## Publication
+
+- **Paper**: [Download PDF](https://atomgradient.github.io/speculative-moe-research/paper.pdf)
+- **Website**: [https://atomgradient.github.io/speculative-moe-research/](https://atomgradient.github.io/speculative-moe-research/)
+
+---
+
 ## Research Question
 
 When MoE active-parameter count is low (e.g., 3B active out of 35B total), does Speculative Decoding still provide meaningful speedup?
@@ -30,13 +38,6 @@ When MoE active-parameter count is low (e.g., 3B active out of 35B total), does 
 2. **Total params drive SD benefit** — speedup scales with memory bandwidth (total params), not active params
 3. **Smaller draft is better** — 0.8B draft outperforms 2B due to lower compute overhead
 4. **Larger γ is optimal** — γ=16 gives best speedup despite lowest acceptance (batch cost grows sub-linearly)
-
----
-
-## Publication
-
-- **Paper**: [Download PDF](https://atomgradient.github.io/speculative-moe-research/paper.pdf)
-- **Website**: [https://atomgradient.github.io/speculative-moe-research/](https://atomgradient.github.io/speculative-moe-research/)
 
 ---
 

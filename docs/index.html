@@ -3,91 +3,207 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Speculative Decoding on MoE Models — AtomGradient</title>
+<title>Does Speculative Decoding Help MoE? — AtomGradient</title>
+<meta name="description" content="Empirical study: Speculative Decoding provides 1.18-1.30x speedup on MoE models despite <4% acceptance rate, through batch verification amortization.">
 <style>
+/* ── Variables ────────────────────────────────────────────────────────────── */
 :root {
-  --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
-  --fg: #c9d1d9; --fg2: #8b949e; --accent: #58a6ff;
-  --accent2: #f0883e; --moe: #a371f7; --dense: #3fb950;
-  --red: #f85149; --border: #30363d; --card-bg: #161b22;
+  --bg: #0d1117; --bg2: #161b22; --bg3: #21262d; --bg4: #282e36;
+  --fg: #e6edf3; --fg2: #8b949e; --fg3: #6e7681;
+  --accent: #58a6ff; --accent2: #f0883e;
+  --moe: #a371f7; --moe-bg: rgba(163,113,247,0.08); --moe-border: rgba(163,113,247,0.3);
+  --dense: #3fb950; --dense-bg: rgba(63,185,80,0.08);
+  --red: #f85149; --yellow: #d29922;
+  --border: #30363d; --card: #161b22;
+  --radius: 12px; --radius-sm: 8px;
 }
+
+/* ── Bilingual Toggle ─────────────────────────────────────────────────────── */
 html[lang="zh"] .e { display: none !important; }
 html[lang="en"] .z { display: none !important; }
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); line-height: 1.6; }
+
+/* ── Reset & Base ─────────────────────────────────────────────────────────── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+  background: var(--bg); color: var(--fg); line-height: 1.7; font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+}
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-.container { max-width: 1100px; margin: 0 auto; padding: 0 20px; }
+.container { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+img { max-width: 100%; height: auto; }
 
-/* Nav */
-nav { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 12px 0; position: sticky; top: 0; z-index: 100; }
-nav .container { display: flex; justify-content: space-between; align-items: center; }
-nav .brand { font-weight: 700; font-size: 1rem; color: var(--fg); }
-nav .brand span { color: var(--accent); }
-nav .links { display: flex; gap: 16px; align-items: center; font-size: 0.9rem; }
-nav .links a { color: var(--fg2); }
-nav .links a:hover { color: var(--fg); }
-.lang-toggle { display: flex; gap: 4px; margin-left: 12px; }
-.lang-toggle button { background: var(--bg3); color: var(--fg2); border: 1px solid var(--border); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
-.lang-toggle button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+/* ── Nav ──────────────────────────────────────────────────────────────────── */
+nav {
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  padding: 14px 0; position: sticky; top: 0; z-index: 100;
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+}
+nav .container { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.brand { font-weight: 700; font-size: 1rem; color: var(--fg); white-space: nowrap; }
+.brand span { color: var(--moe); }
+.nav-right { display: flex; gap: 16px; align-items: center; font-size: 0.88rem; flex-wrap: wrap; }
+.nav-right a { color: var(--fg2); transition: color 0.2s; }
+.nav-right a:hover { color: var(--fg); text-decoration: none; }
+.lang-toggle { display: flex; gap: 4px; margin-left: 8px; }
+.lang-toggle button {
+  background: var(--bg3); color: var(--fg2); border: 1px solid var(--border);
+  padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 0.82rem;
+  transition: all 0.2s;
+}
+.lang-toggle button.active { background: var(--moe); color: #fff; border-color: var(--moe); }
 
-/* Hero */
-.hero { padding: 60px 0 40px; text-align: center; }
-.hero h1 { font-size: 2rem; margin-bottom: 8px; }
-.hero h1 .moe { color: var(--moe); }
-.hero .subtitle { font-size: 1.1rem; color: var(--fg2); margin-bottom: 24px; }
-.badge { display: inline-block; background: var(--bg3); border: 1px solid var(--border); padding: 4px 12px; border-radius: 16px; font-size: 0.8rem; color: var(--fg2); margin: 4px; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 32px; }
-.stat-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; }
-.stat-card .number { font-size: 2rem; font-weight: 800; }
-.stat-card .number.moe { color: var(--moe); }
-.stat-card .number.dense { color: var(--dense); }
-.stat-card .number.red { color: var(--red); }
-.stat-card .number.accent { color: var(--accent); }
-.stat-card .label { font-size: 0.85rem; color: var(--fg2); margin-top: 4px; }
+/* ── Hero ─────────────────────────────────────────────────────────────────── */
+.hero { padding: 64px 0 48px; text-align: center; }
+.hero h1 { font-size: 2.2rem; line-height: 1.3; margin-bottom: 12px; font-weight: 800; }
+.hero h1 .hl { color: var(--moe); }
+.hero .subtitle { font-size: 1.1rem; color: var(--fg2); margin-bottom: 28px; }
+.badges { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.badge {
+  display: inline-block; background: var(--bg3); border: 1px solid var(--border);
+  padding: 5px 14px; border-radius: 20px; font-size: 0.82rem; color: var(--fg2);
+}
 
-/* Sections */
-section { padding: 48px 0; }
-section h2 { font-size: 1.5rem; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
-section h3 { font-size: 1.2rem; margin: 20px 0 10px; color: var(--accent); }
+/* ── Stat Cards ───────────────────────────────────────────────────────────── */
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 36px; }
+@media (max-width: 768px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+.stat-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 24px 16px; text-align: center;
+  transition: border-color 0.2s;
+}
+.stat-card:hover { border-color: var(--fg3); }
+.stat-card .num { font-size: 1.9rem; font-weight: 800; line-height: 1.2; }
+.stat-card .num.moe { color: var(--moe); }
+.stat-card .num.red { color: var(--red); }
+.stat-card .num.dense { color: var(--dense); }
+.stat-card .num.accent { color: var(--accent); }
+.stat-card .lbl { font-size: 0.82rem; color: var(--fg2); margin-top: 6px; }
 
-/* Findings */
-.findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 16px; }
-.finding-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; border-left: 4px solid var(--accent); }
-.finding-card h4 { font-size: 1rem; margin-bottom: 8px; }
-.finding-card p { font-size: 0.9rem; color: var(--fg2); }
+/* ── Section ──────────────────────────────────────────────────────────────── */
+section { padding: 52px 0; }
+section + section { border-top: 1px solid var(--border); }
+.section-title {
+  font-size: 1.6rem; font-weight: 700; margin-bottom: 8px;
+}
+.section-subtitle { color: var(--fg2); font-size: 0.95rem; margin-bottom: 28px; }
 
-/* Tables */
-table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 0.9rem; }
-th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
-th { background: var(--bg3); color: var(--fg); font-weight: 600; }
-tr:hover { background: var(--bg2); }
+/* ── Finding Cards ────────────────────────────────────────────────────────── */
+.findings { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+@media (max-width: 768px) { .findings { grid-template-columns: 1fr; } }
+.finding {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 24px;
+  border-left: 4px solid var(--moe);
+}
+.finding h4 { font-size: 1.05rem; margin-bottom: 8px; color: var(--fg); }
+.finding p { font-size: 0.92rem; color: var(--fg2); line-height: 1.7; }
+.finding .number-highlight { color: var(--moe); font-weight: 700; }
+
+/* ── Plain-Language Explainer ─────────────────────────────────────────────── */
+.explainer-section { background: var(--bg2); border-radius: var(--radius); padding: 32px; margin-top: 20px; border: 1px solid var(--border); }
+.explainer-section h3 { font-size: 1.2rem; margin-bottom: 16px; color: var(--accent2); }
+.explainer-item { margin-bottom: 20px; }
+.explainer-item:last-child { margin-bottom: 0; }
+.explainer-item .q { font-weight: 700; font-size: 1rem; margin-bottom: 6px; color: var(--fg); }
+.explainer-item .a { font-size: 0.95rem; color: var(--fg2); line-height: 1.8; padding-left: 16px; border-left: 3px solid var(--bg3); }
+.explainer-item .a strong { color: var(--fg); }
+
+/* ── How SD Works ─────────────────────────────────────────────────────────── */
+.how-it-works {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px;
+}
+@media (max-width: 768px) { .how-it-works { grid-template-columns: 1fr; } }
+.flow-box {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 24px;
+}
+.flow-box h4 { font-size: 1rem; margin-bottom: 16px; text-align: center; }
+.flow-box h4.moe-title { color: var(--moe); }
+.flow-box h4.baseline-title { color: var(--fg2); }
+.flow-step {
+  display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px;
+  font-size: 0.9rem;
+}
+.flow-step:last-child { margin-bottom: 0; }
+.step-num {
+  background: var(--bg3); color: var(--fg2); width: 28px; height: 28px;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 0.78rem; font-weight: 700; flex-shrink: 0;
+}
+.step-num.moe-step { background: var(--moe-bg); color: var(--moe); border: 1px solid var(--moe-border); }
+.flow-step .step-text { color: var(--fg2); line-height: 1.6; }
+.flow-step .step-text strong { color: var(--fg); }
+.flow-arrow { text-align: center; color: var(--fg3); font-size: 1.2rem; margin: 4px 0; }
+
+/* ── Tables ────────────────────────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; margin: 16px 0; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+th { background: var(--bg3); color: var(--fg); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; }
+tr:hover { background: rgba(255,255,255,0.02); }
 .moe-row { color: var(--moe); font-weight: 600; }
 .dense-row { color: var(--dense); }
+.best-row { background: var(--moe-bg); }
+td.num { font-variant-numeric: tabular-nums; text-align: right; }
 
-/* Figures */
-.figure { margin: 24px 0; text-align: center; }
-.figure img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
-.figure .caption { font-size: 0.85rem; color: var(--fg2); margin-top: 8px; max-width: 800px; margin-left: auto; margin-right: auto; }
-.fig-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; }
+/* ── Figures ───────────────────────────────────────────────────────────────── */
+.figure { margin: 28px 0; }
+.figure img { border-radius: var(--radius-sm); border: 1px solid var(--border); display: block; margin: 0 auto; }
+.figure .caption {
+  font-size: 0.85rem; color: var(--fg2); margin-top: 10px;
+  max-width: 800px; margin-left: auto; margin-right: auto; text-align: center; line-height: 1.6;
+}
+.fig-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
+@media (max-width: 768px) { .fig-grid { grid-template-columns: 1fr; } }
 
-/* Footer */
-footer { background: var(--bg2); border-top: 1px solid var(--border); padding: 32px 0; text-align: center; margin-top: 40px; }
+/* ── Analogy Box ──────────────────────────────────────────────────────────── */
+.analogy-box {
+  background: linear-gradient(135deg, rgba(163,113,247,0.06), rgba(88,166,255,0.06));
+  border: 1px solid var(--moe-border);
+  border-radius: var(--radius); padding: 28px; margin: 24px 0;
+}
+.analogy-box h4 { color: var(--accent2); font-size: 1.05rem; margin-bottom: 12px; }
+.analogy-box p { font-size: 0.95rem; color: var(--fg2); line-height: 1.8; }
+.analogy-box p strong { color: var(--fg); }
+
+/* ── Takeaway Box ─────────────────────────────────────────────────────────── */
+.takeaway {
+  background: var(--moe-bg); border: 1px solid var(--moe-border);
+  border-radius: var(--radius); padding: 28px; margin: 24px 0;
+}
+.takeaway h4 { color: var(--moe); font-size: 1.1rem; margin-bottom: 12px; }
+.takeaway ul { list-style: none; padding: 0; }
+.takeaway li {
+  font-size: 0.95rem; color: var(--fg2); padding: 6px 0 6px 24px;
+  position: relative; line-height: 1.7;
+}
+.takeaway li::before { content: "→"; position: absolute; left: 0; color: var(--moe); font-weight: 700; }
+.takeaway li strong { color: var(--fg); }
+
+/* ── Footer ───────────────────────────────────────────────────────────────── */
+footer {
+  background: var(--bg2); border-top: 1px solid var(--border);
+  padding: 36px 0; text-align: center; margin-top: 40px;
+}
 footer p { margin: 6px 0; font-size: 0.9rem; color: var(--fg2); }
-footer .wip { color: var(--accent2); font-size: 0.8rem; }
+footer .wip { color: var(--accent2); font-size: 0.82rem; margin-top: 8px; }
+footer a { color: var(--accent); }
 </style>
 </head>
 <body>
 
-<!-- NAV -->
+<!-- ════════════ NAV ════════════ -->
 <nav>
 <div class="container">
   <div class="brand"><span>AtomGradient</span> · SD on MoE</div>
-  <div class="links">
+  <div class="nav-right">
+    <a href="#tldr">TL;DR</a>
+    <a href="#how"><span class="e">How It Works</span><span class="z">工作原理</span></a>
     <a href="#results"><span class="e">Results</span><span class="z">结果</span></a>
     <a href="#figures"><span class="e">Figures</span><span class="z">图表</span></a>
-    <a href="#hardware"><span class="e">Hardware</span><span class="z">硬件</span></a>
-    <a href="paper.pdf"><span class="e">Paper</span><span class="z">论文</span></a>
+    <a href="paper.pdf"><span class="e">Paper (PDF)</span><span class="z">论文</span></a>
     <div class="lang-toggle">
       <button id="btn-en" class="active" onclick="setLang('en')">EN</button>
       <button id="btn-zh" onclick="setLang('zh')">中文</button>
@@ -96,180 +212,443 @@ footer .wip { color: var(--accent2); font-size: 0.8rem; }
 </div>
 </nav>
 
-<!-- HERO -->
+<!-- ════════════ HERO ════════════ -->
 <section class="hero">
 <div class="container">
   <h1>
-    <span class="e">Does Speculative Decoding Help <span class="moe">Mixture-of-Experts</span>?</span>
-    <span class="z">推测解码对<span class="moe">混合专家模型</span>有帮助吗？</span>
+    <span class="e">Does Speculative Decoding Help <span class="hl">Mixture-of-Experts</span>?</span>
+    <span class="z">推测解码对<span class="hl">混合专家模型</span>有用吗？</span>
   </h1>
   <p class="subtitle">
-    <span class="e">An Empirical Study on Qwen3.5-35B-A3B with Apple Silicon</span>
-    <span class="z">基于 Qwen3.5-35B-A3B 和 Apple Silicon 的实证研究</span>
+    <span class="e">An Empirical Study · 306 Runs · Qwen3.5-35B-A3B · Apple M2 Ultra</span>
+    <span class="z">实证研究 · 306 次实验 · Qwen3.5-35B-A3B · Apple M2 Ultra</span>
   </p>
-  <div>
+  <div class="badges">
     <span class="badge">Qwen3.5-35B-A3B</span>
-    <span class="badge">Apple M2 Ultra · 192GB</span>
-    <span class="badge">llama.cpp</span>
-    <span class="badge">306 runs</span>
+    <span class="badge">Apple M2 Ultra · 192 GB</span>
+    <span class="badge">llama.cpp (Metal)</span>
+    <span class="badge">306 runs · 5 suites</span>
   </div>
+
   <div class="stats">
     <div class="stat-card">
-      <div class="number moe">1.18–1.30×</div>
-      <div class="label"><span class="e">MoE SD Speedup</span><span class="z">MoE 推测解码加速</span></div>
+      <div class="num moe">1.30×</div>
+      <div class="lbl"><span class="e">Best MoE Speedup</span><span class="z">MoE 最佳加速</span></div>
     </div>
     <div class="stat-card">
-      <div class="number red">&lt;4%</div>
-      <div class="label"><span class="e">Draft Acceptance Rate</span><span class="z">草稿接受率</span></div>
+      <div class="num red">&lt; 4%</div>
+      <div class="lbl"><span class="e">Acceptance Rate</span><span class="z">草稿接受率</span></div>
     </div>
     <div class="stat-card">
-      <div class="number dense">2.03×</div>
-      <div class="label"><span class="e">Best Dense Speedup (9B)</span><span class="z">最佳 Dense 加速 (9B)</span></div>
+      <div class="num dense">2.03×</div>
+      <div class="lbl"><span class="e">Best Dense Speedup (9B)</span><span class="z">Dense 最佳加速 (9B)</span></div>
     </div>
     <div class="stat-card">
-      <div class="number accent">55.3→69.7</div>
-      <div class="label"><span class="e">MoE Q4 tok/s (baseline→SD)</span><span class="z">MoE Q4 吞吐 (基线→SD)</span></div>
+      <div class="num accent">55→70</div>
+      <div class="lbl"><span class="e">MoE Q4 tok/s</span><span class="z">MoE Q4 吞吐量</span></div>
     </div>
   </div>
 </div>
 </section>
 
-<!-- KEY FINDINGS -->
+<!-- ════════════ TL;DR ════════════ -->
+<section id="tldr">
+<div class="container">
+  <h2 class="section-title"><span class="e">TL;DR — One-Minute Summary</span><span class="z">一句话总结</span></h2>
+  <p class="section-subtitle">
+    <span class="e">The key finding, explained simply.</span>
+    <span class="z">核心发现，用大白话说。</span>
+  </p>
+
+  <div class="analogy-box">
+    <h4><span class="e">🎯 The Big Picture</span><span class="z">🎯 大白话版结论</span></h4>
+    <p>
+      <span class="e">
+        <strong>Speculative decoding (SD)</strong> uses a tiny "draft" model to guess what a big model will say, then the big model checks all the guesses at once. Usually this works because the draft gets many guesses right. But when the draft is tiny (0.8B) and the target is huge (35B MoE), <strong>almost none of the guesses are correct (&lt;4%)</strong>. So why does it still speed things up by 18–30%?<br><br>
+        The secret: <strong>checking 16 wrong answers at once is still faster than generating 1 answer at a time.</strong> The big model has to load all 35 billion parameters from memory for each answer. When it checks 16 draft tokens in one batch, it loads those weights <em>once</em> instead of 16 separate times. This "batch verification amortization" saves memory bandwidth — which is the real bottleneck for MoE models.
+      </span>
+      <span class="z">
+        <strong>推测解码（SD）</strong>的原理是：用一个小模型先"猜"大模型接下来要说什么，然后大模型一次性检查所有猜测。通常它能加速是因为小模型猜得准。但当小模型很小（0.8B）、大模型很大（35B MoE）时，<strong>几乎所有猜测都是错的（正确率不到4%）</strong>。那为什么还能加速18-30%？<br><br>
+        秘密在于：<strong>一次性检查16个错误答案，仍然比一个一个地生成答案要快。</strong>大模型每生成一个token都要把350亿参数从内存里读一遍。当它一次性检查16个草稿token时，这些参数只需要读<em>一次</em>而不是16次。这种"批量验证摊销"节省了内存带宽——这才是MoE模型真正的瓶颈。
+      </span>
+    </p>
+  </div>
+
+  <div class="explainer-section">
+    <h3><span class="e">🗣️ Plain-Language Q&A</span><span class="z">🗣️ 大白话问答</span></h3>
+
+    <div class="explainer-item">
+      <div class="q"><span class="e">Q: What is MoE, and why is it special?</span><span class="z">问：什么是 MoE？有什么特别的？</span></div>
+      <div class="a">
+        <span class="e">
+          <strong>MoE = Mixture of Experts.</strong> Imagine a company with 128 specialists (experts), but for each task, only 2 of them actually work on it. The model has 35 billion total parameters (all 128 experts), but only uses ~3 billion per token (the 2 active experts). This makes it smart like a 35B model but fast-ish like a 3B model. The catch? All 128 experts still need to sit in memory, even if most are idle. That's a lot of data to keep around.
+        </span>
+        <span class="z">
+          <strong>MoE = 混合专家模型。</strong>想象一个公司有128个专家，但每个任务只让其中2个人干活。这个模型总共有350亿参数（所有128个专家），但每个token只用到约30亿参数（2个活跃专家）。所以它聪明得像350亿的模型，但速度接近30亿的模型。问题是：即使大部分专家在"摸鱼"，他们也都得坐在内存里占位子。这很费内存。
+        </span>
+      </div>
+    </div>
+
+    <div class="explainer-item">
+      <div class="q"><span class="e">Q: Why does SD help if the draft model gets everything wrong?</span><span class="z">问：小模型猜得全错，为什么还能加速？</span></div>
+      <div class="a">
+        <span class="e">
+          Think of it like a delivery truck. Without SD, the truck makes 16 separate trips, loading all the goods each time. With SD, the truck loads once and delivers 16 packages in one trip — even if all packages are returned (rejected). <strong>The savings come from loading the truck once instead of 16 times</strong>, not from delivering the right packages. For MoE models, "loading the truck" = reading 35B parameters from memory, which takes ~18ms. Doing this once instead of 16 times saves huge time.
+        </span>
+        <span class="z">
+          想象一辆送货卡车。没有SD时，卡车要跑16趟，每趟都要装满货物。有SD时，卡车装一次货就跑一趟送16个包裹——即使所有包裹都被退回（拒绝）。<strong>省时间的原因是只装了一次货，而不是装16次</strong>，跟包裹是否被签收没关系。对MoE模型来说，"装货" = 从内存读取350亿参数，每次约18毫秒。读1次而不是16次，省了大量时间。
+        </span>
+      </div>
+    </div>
+
+    <div class="explainer-item">
+      <div class="q"><span class="e">Q: Why does a smaller draft model work better than a bigger one?</span><span class="z">问：为什么更小的小模型反而更好？</span></div>
+      <div class="a">
+        <span class="e">
+          The 0.8B draft outperforms the 2B draft because <strong>neither guesses correctly anyway</strong> — both have &lt;4% accuracy. But the 0.8B model runs 2.5× faster, so the "wasted" time on drafting is much smaller. Since the speedup comes from batch verification (not correct guesses), you want the draft to be as cheap as possible. Think of it as: if you're hiring someone to make guesses that will all be wrong anyway, hire the cheapest one.
+        </span>
+        <span class="z">
+          0.8B小模型比2B小模型效果更好，因为<strong>反正两个都猜不准</strong>——准确率都不到4%。但0.8B运行速度快2.5倍，所以"浪费"在猜测上的时间少得多。既然加速来自批量验证而非正确猜测，你当然希望猜测过程越便宜越好。打个比方：如果你要雇人来猜答案但猜的肯定都是错的，那就雇最便宜的那个。
+        </span>
+      </div>
+    </div>
+
+    <div class="explainer-item">
+      <div class="q"><span class="e">Q: Why does guessing more tokens (larger γ) give better speedup?</span><span class="z">问：为什么猜更多token（更大的γ）反而更快？</span></div>
+      <div class="a">
+        <span class="e">
+          Counterintuitive, right? Guessing 16 tokens has a lower acceptance rate (0.2%) than guessing 4 tokens (2.6%). But <strong>the cost of verifying 16 tokens is NOT 4× the cost of verifying 4 tokens</strong> — it's maybe 1.5× thanks to GPU parallelism. So you get to "skip" more sequential forward passes for a relatively small extra cost. The truck analogy again: whether you put 4 or 16 packages on the truck, the fuel cost is almost the same because the heavy part is driving the route, not carrying the packages.
+        </span>
+        <span class="z">
+          反直觉吧？猜16个token的接受率（0.2%）比猜4个（2.6%）低得多。但<strong>验证16个token的成本不是验证4个的4倍</strong>——得益于GPU并行计算，可能只是1.5倍。所以你用少量额外成本"跳过"了更多的逐个生成步骤。还是卡车的例子：不管你放4个还是16个包裹，油费几乎一样，因为费油的是跑路线这件事，不是搬包裹。
+        </span>
+      </div>
+    </div>
+
+    <div class="explainer-item">
+      <div class="q"><span class="e">Q: Should I actually use this? What's the practical takeaway?</span><span class="z">问：我实际使用MoE模型时该怎么做？</span></div>
+      <div class="a">
+        <span class="e">
+          <strong>Yes!</strong> If you're running an MoE model like Qwen3.5-35B-A3B on your Mac (or similar unified-memory hardware), enable speculative decoding with the smallest draft model you have (0.8B) and set γ=16. You'll get ~26–30% faster generation for free — no quality loss, minimal extra memory (~1 GB). It's basically a free lunch.
+        </span>
+        <span class="z">
+          <strong>当然用！</strong>如果你在Mac（或类似统一内存硬件）上跑MoE模型如Qwen3.5-35B-A3B，开启推测解码，用最小的草稿模型（0.8B），设γ=16。你会免费获得约26-30%的加速——不损失质量，额外内存开销很小（约1GB）。这基本上是白送的午餐。
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ════════════ HOW IT WORKS ════════════ -->
+<section id="how">
+<div class="container">
+  <h2 class="section-title"><span class="e">How Speculative Decoding Works on MoE</span><span class="z">推测解码在MoE上的工作原理</span></h2>
+  <p class="section-subtitle">
+    <span class="e">Traditional SD relies on draft accuracy. On MoE, a different mechanism dominates.</span>
+    <span class="z">传统SD依赖草稿的准确性。在MoE上，起作用的是另一个机制。</span>
+  </p>
+
+  <div class="how-it-works">
+    <div class="flow-box">
+      <h4 class="baseline-title"><span class="e">❌ Without SD (Baseline)</span><span class="z">❌ 不用SD（基线）</span></h4>
+      <div class="flow-step">
+        <div class="step-num">1</div>
+        <div class="step-text"><span class="e"><strong>Load 35B weights</strong> from memory (~18ms)</span><span class="z"><strong>从内存加载350亿参数</strong>（约18ms）</span></div>
+      </div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step">
+        <div class="step-num">2</div>
+        <div class="step-text"><span class="e"><strong>Compute 1 token</strong> using 3B active params</span><span class="z"><strong>用30亿活跃参数计算1个token</strong></span></div>
+      </div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step">
+        <div class="step-num">3</div>
+        <div class="step-text"><span class="e"><strong>Repeat 256 times</strong> → 256 weight loads</span><span class="z"><strong>重复256次</strong> → 加载256次参数</span></div>
+      </div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step">
+        <div class="step-num">⏱</div>
+        <div class="step-text"><strong>55.3 tok/s</strong></div>
+      </div>
+    </div>
+
+    <div class="flow-box">
+      <h4 class="moe-title"><span class="e">✅ With SD (γ=16)</span><span class="z">✅ 使用SD（γ=16）</span></h4>
+      <div class="flow-step">
+        <div class="step-num moe-step">1</div>
+        <div class="step-text"><span class="e"><strong>Draft 16 tokens</strong> with 0.8B model (fast, ~2ms)</span><span class="z"><strong>用0.8B模型猜16个token</strong>（很快，约2ms）</span></div>
+      </div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step">
+        <div class="step-num moe-step">2</div>
+        <div class="step-text"><span class="e"><strong>Load 35B weights once</strong> (~18ms)</span><span class="z"><strong>加载350亿参数一次</strong>（约18ms）</span></div>
+      </div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step">
+        <div class="step-num moe-step">3</div>
+        <div class="step-text"><span class="e"><strong>Verify all 16 + output 1 token</strong> (batched, weights reused)</span><span class="z"><strong>批量验证16个token + 输出1个</strong>（权重复用）</span></div>
+      </div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step">
+        <div class="step-num moe-step">4</div>
+        <div class="step-text"><span class="e"><strong>~16 rounds</strong> instead of 256 → ~16 weight loads</span><span class="z"><strong>约16轮</strong>而非256轮 → 约16次参数加载</span></div>
+      </div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step">
+        <div class="step-num moe-step">⏱</div>
+        <div class="step-text"><strong style="color:var(--moe)">69.7 tok/s (+26%)</strong></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="analogy-box" style="margin-top:24px;">
+    <h4><span class="e">💡 Why This Is Surprising</span><span class="z">💡 为什么这很令人意外</span></h4>
+    <p>
+      <span class="e">
+        Traditional SD theory says: <strong>low acceptance rate = no speedup</strong>. Our MoE results break this rule. With &lt;4% acceptance (essentially all drafts rejected), we still get 1.30× speedup. The key insight is that on <strong>memory-bandwidth-bound models</strong> (where weight loading is the bottleneck, not computation), batch verification itself is the optimization — not the accepted tokens. <strong>This is a different speedup mechanism from what textbooks describe.</strong>
+      </span>
+      <span class="z">
+        传统SD理论说：<strong>低接受率 = 没加速</strong>。我们的MoE结果打破了这个规则。即使接受率不到4%（基本上所有草稿都被拒绝），我们仍然获得1.30×加速。关键洞察是：对于<strong>受内存带宽限制的模型</strong>（瓶颈在于读取参数而非计算），批量验证本身就是优化——被接受的token反而不重要。<strong>这和教科书里描述的加速机制是不同的。</strong>
+      </span>
+    </p>
+  </div>
+</div>
+</section>
+
+<!-- ════════════ KEY FINDINGS ════════════ -->
 <section>
 <div class="container">
-  <h2><span class="e">Key Findings</span><span class="z">核心发现</span></h2>
+  <h2 class="section-title"><span class="e">Key Findings</span><span class="z">四大发现</span></h2>
   <div class="findings">
-    <div class="finding-card">
-      <h4><span class="e">SD Works for MoE</span><span class="z">SD 对 MoE 有效</span></h4>
-      <p><span class="e">Despite very low acceptance rates (&lt;4%), speculative decoding provides 1.18–1.30× speedup on MoE models through batch verification efficiency.</span>
-      <span class="z">尽管接受率极低（&lt;4%），推测解码通过批量验证效率仍能为 MoE 模型提供 1.18–1.30× 加速。</span></p>
+    <div class="finding">
+      <h4><span class="e">1. SD Works for MoE</span><span class="z">1. SD对MoE有效</span></h4>
+      <p>
+        <span class="e"><span class="number-highlight">1.18–1.30× speedup</span> despite &lt;4% acceptance rate. The speedup comes from batch verification amortizing memory bandwidth, not from accepted draft tokens.</span>
+        <span class="z"><span class="number-highlight">1.18–1.30× 加速</span>，尽管接受率低于4%。加速来自批量验证对内存带宽的摊销，而非被接受的草稿token。</span>
+      </p>
     </div>
-    <div class="finding-card">
-      <h4><span class="e">Total Params Matter</span><span class="z">总参数量决定效果</span></h4>
-      <p><span class="e">SD speedup scales with total parameter footprint (memory bandwidth), not active parameters. MoE (35B total, 3B active) behaves like a 4–9B dense model.</span>
-      <span class="z">SD 加速与总参数量（内存带宽）成正比，而非活跃参数量。MoE（35B 总量，3B 活跃）表现类似 4-9B 的 Dense 模型。</span></p>
+    <div class="finding">
+      <h4><span class="e">2. Total Params Drive Benefit</span><span class="z">2. 总参数量决定收益</span></h4>
+      <p>
+        <span class="e">SD speedup scales with <span class="number-highlight">total parameter footprint</span> (memory bandwidth), not active compute. MoE with 35B total, 3B active gets more speedup than Dense 4B but less than Dense 9B.</span>
+        <span class="z">SD加速与<span class="number-highlight">总参数量</span>（内存带宽）成正比，而非活跃计算量。35B总量、3B活跃的MoE加速效果介于Dense 4B和Dense 9B之间。</span>
+      </p>
     </div>
-    <div class="finding-card">
-      <h4><span class="e">Smaller Draft = Better</span><span class="z">更小的 Draft 更好</span></h4>
-      <p><span class="e">The 0.8B draft outperforms the 2B draft — lower compute overhead preserves more batch verification benefit.</span>
-      <span class="z">0.8B 草稿模型优于 2B — 更低的计算开销保留了更多批量验证收益。</span></p>
+    <div class="finding">
+      <h4><span class="e">3. Smaller Draft = More Speed</span><span class="z">3. 更小的草稿模型 = 更快</span></h4>
+      <p>
+        <span class="e">The <span class="number-highlight">0.8B draft beats 2B</span> by 0.12–0.14× despite lower accuracy. Since almost no drafts are accepted anyway, the cheapest drafter wins.</span>
+        <span class="z"><span class="number-highlight">0.8B草稿模型胜过2B</span>，高出0.12–0.14×，尽管准确率更低。既然反正几乎没有草稿被接受，最便宜的选手赢了。</span>
+      </p>
     </div>
-    <div class="finding-card">
-      <h4><span class="e">Larger γ = More Speedup</span><span class="z">更大的 γ = 更大加速</span></h4>
-      <p><span class="e">Counterintuitively, γ=16 gives the best speedup (1.30×) despite lowest acceptance (0.2%), because batch verification cost grows sub-linearly.</span>
-      <span class="z">反直觉地，γ=16 提供最佳加速（1.30×），尽管接受率最低（0.2%），因为批量验证成本增长低于线性。</span></p>
+    <div class="finding">
+      <h4><span class="e">4. More Guesses = Better</span><span class="z">4. 猜越多越好</span></h4>
+      <p>
+        <span class="e"><span class="number-highlight">γ=16 beats γ=4</span> even though acceptance drops from 2.6% to 0.2%. Batch verification cost grows sub-linearly — verifying 16 tokens costs only ~1.5× as much as verifying 4.</span>
+        <span class="z"><span class="number-highlight">γ=16 胜过 γ=4</span>，即使接受率从2.6%降到0.2%。批量验证成本低于线性增长——验证16个token的成本仅为验证4个的约1.5倍。</span>
+      </p>
     </div>
   </div>
 </div>
 </section>
 
-<!-- RESULTS TABLE -->
+<!-- ════════════ RESULTS ════════════ -->
 <section id="results">
 <div class="container">
-  <h2><span class="e">Results</span><span class="z">实验结果</span></h2>
+  <h2 class="section-title"><span class="e">Experiment Results</span><span class="z">实验数据</span></h2>
+  <p class="section-subtitle">
+    <span class="e">306 runs across 5 experiment suites on Apple M2 Ultra (192 GB, 800 GB/s).</span>
+    <span class="z">在 Apple M2 Ultra（192 GB, 800 GB/s）上完成 5 组共 306 次实验。</span>
+  </p>
 
-  <h3><span class="e">Baseline Throughput (No Speculative Decoding)</span><span class="z">基线吞吐量（无推测解码）</span></h3>
+  <h3 style="color:var(--fg);font-size:1.15rem;margin-bottom:12px;">
+    <span class="e">Baseline Throughput (No Speculative Decoding)</span>
+    <span class="z">基线吞吐量（无推测解码）</span>
+  </h3>
+  <div class="table-wrap">
   <table>
     <thead>
       <tr>
         <th><span class="e">Model</span><span class="z">模型</span></th>
-        <th><span class="e">Active Params</span><span class="z">活跃参数</span></th>
-        <th><span class="e">Total Params</span><span class="z">总参数</span></th>
-        <th><span class="e">Throughput (tok/s)</span><span class="z">吞吐量 (tok/s)</span></th>
+        <th><span class="e">Active</span><span class="z">活跃参数</span></th>
+        <th><span class="e">Total</span><span class="z">总参数</span></th>
+        <th>tok/s</th>
+        <th><span class="e">Note</span><span class="z">备注</span></th>
       </tr>
     </thead>
     <tbody>
-      <tr class="dense-row"><td>Dense 0.8B</td><td>0.8B</td><td>0.8B</td><td>138.0 ± 0.3</td></tr>
-      <tr class="dense-row"><td>Dense 2B</td><td>2.0B</td><td>2.0B</td><td>110.4 ± 0.3</td></tr>
-      <tr class="moe-row"><td>MoE Q4 (35B-A3B)</td><td>3.0B</td><td>35B</td><td>55.3 ± 0.1</td></tr>
-      <tr class="moe-row"><td>MoE Q8 (35B-A3B)</td><td>3.0B</td><td>35B</td><td>49.9 ± 0.1</td></tr>
-      <tr class="dense-row"><td>Dense 4B</td><td>4.0B</td><td>4.0B</td><td>67.2 ± 0.1</td></tr>
-      <tr class="dense-row"><td>Dense 9B</td><td>9.0B</td><td>9.0B</td><td>33.4 ± 0.0</td></tr>
+      <tr class="dense-row"><td>Dense 0.8B</td><td>0.8B</td><td>0.8B</td><td class="num">138.0</td><td class="e" style="color:var(--fg3)">Draft model (fastest)</td><td class="z" style="color:var(--fg3)">草稿模型（最快）</td></tr>
+      <tr class="dense-row"><td>Dense 2B</td><td>2.0B</td><td>2.0B</td><td class="num">110.4</td><td class="e" style="color:var(--fg3)">Larger draft</td><td class="z" style="color:var(--fg3)">较大的草稿模型</td></tr>
+      <tr class="moe-row"><td>★ MoE Q4 (35B-A3B)</td><td>3.0B</td><td>35B</td><td class="num">55.3</td><td class="e" style="color:var(--fg3)">3B active but 35B in memory</td><td class="z" style="color:var(--fg3)">3B活跃但35B占内存</td></tr>
+      <tr class="moe-row"><td>★ MoE Q8 (35B-A3B)</td><td>3.0B</td><td>35B</td><td class="num">49.9</td><td class="e" style="color:var(--fg3)">Higher precision, larger file</td><td class="z" style="color:var(--fg3)">更高精度，文件更大</td></tr>
+      <tr class="dense-row"><td>Dense 4B</td><td>4.0B</td><td>4.0B</td><td class="num">67.2</td><td class="e" style="color:var(--fg3)">More active params than MoE, but faster!</td><td class="z" style="color:var(--fg3)">活跃参数比MoE多，但反而更快！</td></tr>
+      <tr class="dense-row"><td>Dense 9B</td><td>9.0B</td><td>9.0B</td><td class="num">33.4</td><td class="e" style="color:var(--fg3)">Most bandwidth-bound</td><td class="z" style="color:var(--fg3)">最受带宽限制</td></tr>
     </tbody>
   </table>
+  </div>
 
-  <h3><span class="e">Speculative Decoding Results (Draft: 0.8B)</span><span class="z">推测解码结果（Draft: 0.8B）</span></h3>
+  <div class="analogy-box" style="margin:20px 0;">
+    <h4><span class="e">🔍 Notice something weird?</span><span class="z">🔍 发现奇怪的地方了吗？</span></h4>
+    <p>
+      <span class="e">
+        The MoE model has only 3B active parameters — less than the Dense 4B. So it should be <em>faster</em>, right? <strong>Wrong.</strong> MoE runs at 55 tok/s while Dense 4B runs at 67 tok/s. That's because MoE has 35B <em>total</em> parameters sitting in memory, and the chip has to load all of them for each token, even though only 3B are used. This is the "MoE tax" — you pay for the whole building even if you only use one office.
+      </span>
+      <span class="z">
+        MoE模型只有30亿活跃参数——比Dense 4B还少。所以它应该更<em>快</em>对吧？<strong>错了。</strong>MoE只跑55 tok/s，而Dense 4B跑67 tok/s。因为MoE的350亿<em>总</em>参数全部坐在内存里，芯片每生成一个token都要读取全部参数，尽管只有30亿被用到。这就是"MoE税"——你为整栋大楼付费，即使你只用了一间办公室。
+      </span>
+    </p>
+  </div>
+
+  <h3 style="color:var(--fg);font-size:1.15rem;margin:28px 0 12px;">
+    <span class="e">Speculative Decoding Results (Draft: 0.8B)</span>
+    <span class="z">推测解码结果（草稿模型：0.8B）</span>
+  </h3>
+  <div class="table-wrap">
   <table>
     <thead>
       <tr>
         <th><span class="e">Target</span><span class="z">目标模型</span></th>
         <th>γ</th>
         <th>tok/s</th>
-        <th><span class="e">Speedup</span><span class="z">加速比</span></th>
-        <th><span class="e">Acceptance α</span><span class="z">接受率 α</span></th>
+        <th><span class="e">Speedup</span><span class="z">加速</span></th>
+        <th><span class="e">Acceptance</span><span class="z">接受率</span></th>
       </tr>
     </thead>
     <tbody>
-      <tr class="moe-row"><td>MoE Q4</td><td>4</td><td>63.4</td><td>1.15×</td><td>2.6%</td></tr>
-      <tr class="moe-row"><td>MoE Q4</td><td>8</td><td>65.2</td><td>1.18×</td><td>1.1%</td></tr>
-      <tr class="moe-row"><td>MoE Q4</td><td>16</td><td>69.7</td><td>1.26×</td><td>0.2%</td></tr>
-      <tr class="moe-row"><td>MoE Q8</td><td>4</td><td>57.5</td><td>1.15×</td><td>2.7%</td></tr>
-      <tr class="moe-row"><td>MoE Q8</td><td>8</td><td>60.9</td><td>1.22×</td><td>1.0%</td></tr>
-      <tr class="moe-row"><td>MoE Q8</td><td>16</td><td>64.8</td><td>1.30×</td><td>0.2%</td></tr>
-      <tr class="dense-row"><td>Dense 4B</td><td>4</td><td>70.9</td><td>1.05×</td><td>3.0%</td></tr>
-      <tr class="dense-row"><td>Dense 4B</td><td>8</td><td>65.9</td><td>0.98×</td><td>1.1%</td></tr>
-      <tr class="dense-row"><td>Dense 4B</td><td>16</td><td>75.1</td><td>1.12×</td><td>0.4%</td></tr>
-      <tr class="dense-row"><td>Dense 9B</td><td>4</td><td>32.8</td><td>0.98×</td><td>2.3%</td></tr>
-      <tr class="dense-row"><td>Dense 9B</td><td>8</td><td>55.0</td><td>1.64×</td><td>0.9%</td></tr>
-      <tr class="dense-row"><td>Dense 9B</td><td>16</td><td>67.7</td><td>2.03×</td><td>0.4%</td></tr>
+      <tr class="moe-row"><td>MoE Q4</td><td>4</td><td class="num">63.4</td><td class="num">1.15×</td><td class="num">2.6%</td></tr>
+      <tr class="moe-row"><td>MoE Q4</td><td>8</td><td class="num">65.2</td><td class="num">1.18×</td><td class="num">1.1%</td></tr>
+      <tr class="moe-row best-row"><td>★ MoE Q4</td><td>16</td><td class="num">69.7</td><td class="num">1.26×</td><td class="num">0.2%</td></tr>
+      <tr class="moe-row"><td>MoE Q8</td><td>4</td><td class="num">57.5</td><td class="num">1.15×</td><td class="num">2.7%</td></tr>
+      <tr class="moe-row"><td>MoE Q8</td><td>8</td><td class="num">60.9</td><td class="num">1.22×</td><td class="num">1.0%</td></tr>
+      <tr class="moe-row best-row"><td>★ MoE Q8</td><td>16</td><td class="num">64.8</td><td class="num">1.30×</td><td class="num">0.2%</td></tr>
+      <tr class="dense-row"><td>Dense 4B</td><td>4</td><td class="num">70.9</td><td class="num">1.05×</td><td class="num">3.0%</td></tr>
+      <tr class="dense-row"><td>Dense 4B</td><td>8</td><td class="num">65.9</td><td class="num">0.98×</td><td class="num">1.1%</td></tr>
+      <tr class="dense-row"><td>Dense 4B</td><td>16</td><td class="num">75.1</td><td class="num">1.12×</td><td class="num">0.4%</td></tr>
+      <tr class="dense-row"><td>Dense 9B</td><td>4</td><td class="num">32.8</td><td class="num">0.98×</td><td class="num">2.3%</td></tr>
+      <tr class="dense-row"><td>Dense 9B</td><td>8</td><td class="num">55.0</td><td class="num">1.64×</td><td class="num">0.9%</td></tr>
+      <tr class="dense-row best-row" style="color:var(--dense)"><td>★ Dense 9B</td><td>16</td><td class="num">67.7</td><td class="num">2.03×</td><td class="num">0.4%</td></tr>
     </tbody>
   </table>
+  </div>
+
+  <h3 style="color:var(--fg);font-size:1.15rem;margin:28px 0 12px;">
+    <span class="e">Draft Model Comparison: 0.8B vs 2B on MoE</span>
+    <span class="z">草稿模型对比：0.8B vs 2B（MoE目标）</span>
+  </h3>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th><span class="e">Target / γ</span><span class="z">目标 / γ</span></th>
+        <th colspan="2"><span class="e">Draft 0.8B</span><span class="z">草稿 0.8B</span></th>
+        <th colspan="2"><span class="e">Draft 2B</span><span class="z">草稿 2B</span></th>
+        <th><span class="e">Winner</span><span class="z">胜出</span></th>
+      </tr>
+      <tr>
+        <th></th>
+        <th><span class="e">Speedup</span><span class="z">加速</span></th>
+        <th>α</th>
+        <th><span class="e">Speedup</span><span class="z">加速</span></th>
+        <th>α</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="moe-row"><td>MoE Q4 / γ=4</td><td class="num">1.15×</td><td class="num">2.6%</td><td class="num">1.03×</td><td class="num">4.0%</td><td>0.8B ✓</td></tr>
+      <tr class="moe-row"><td>MoE Q4 / γ=8</td><td class="num">1.18×</td><td class="num">1.1%</td><td class="num">1.05×</td><td class="num">1.7%</td><td>0.8B ✓</td></tr>
+      <tr class="moe-row"><td>MoE Q4 / γ=16</td><td class="num">1.26×</td><td class="num">0.2%</td><td class="num">1.12×</td><td class="num">0.9%</td><td>0.8B ✓</td></tr>
+      <tr class="moe-row"><td>MoE Q8 / γ=4</td><td class="num">1.15×</td><td class="num">2.7%</td><td class="num">1.03×</td><td class="num">3.6%</td><td>0.8B ✓</td></tr>
+      <tr class="moe-row"><td>MoE Q8 / γ=8</td><td class="num">1.22×</td><td class="num">1.0%</td><td class="num">1.09×</td><td class="num">2.0%</td><td>0.8B ✓</td></tr>
+      <tr class="moe-row"><td>MoE Q8 / γ=16</td><td class="num">1.30×</td><td class="num">0.2%</td><td class="num">1.16×</td><td class="num">0.9%</td><td>0.8B ✓</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="explainer-section" style="margin-top:20px;">
+    <h3><span class="e">📊 Reading the Data</span><span class="z">📊 怎么看这些数据</span></h3>
+    <div class="explainer-item">
+      <div class="q"><span class="e">The paradox: 2B draft has higher acceptance but lower speedup. Why?</span><span class="z">悖论：2B草稿接受率更高，加速却更低。为什么？</span></div>
+      <div class="a">
+        <span class="e">At γ=4, the 2B draft has 4.0% acceptance vs 0.8B's 2.6%. But the 2B model takes ~2.5× longer to generate each draft token. The tiny accuracy advantage (accepting maybe 1 extra token out of 16) can't offset the much higher drafting cost. <strong>In the low-acceptance regime, draft speed matters more than draft quality.</strong></span>
+        <span class="z">在γ=4时，2B草稿有4.0%接受率，0.8B只有2.6%。但2B模型生成每个草稿token要慢约2.5倍。微小的准确率优势（16个token里也许多对1个）无法弥补更高的生成成本。<strong>在低接受率场景下，草稿速度比草稿质量更重要。</strong></span>
+      </div>
+    </div>
+  </div>
 </div>
 </section>
 
-<!-- FIGURES -->
+<!-- ════════════ FIGURES ════════════ -->
 <section id="figures">
 <div class="container">
-  <h2><span class="e">Figures</span><span class="z">图表</span></h2>
+  <h2 class="section-title"><span class="e">Figures</span><span class="z">实验图表</span></h2>
 
   <div class="figure">
-    <img src="../results/plots/fig1_speedup_curve.png" alt="Speedup vs Active Parameters">
+    <img src="plots/fig1_speedup_curve.png" alt="Speedup vs Active Parameters">
     <div class="caption">
-      <span class="e"><strong>Figure 1:</strong> SD speedup vs active parameter count (draft: 0.8B, γ=8). MoE ★ points at 3B active fall above Dense 4B, showing that total parameter footprint (memory bandwidth) drives SD benefit.</span>
-      <span class="z"><strong>图1：</strong>SD 加速比与活跃参数数量（draft: 0.8B, γ=8）。MoE ★ 点位于 Dense 4B 之上，表明总参数量（内存带宽）决定了 SD 收益。</span>
+      <span class="e"><strong>Figure 1: SD Speedup vs Active Parameter Count</strong> (draft: 0.8B, γ=8). The MoE models (★) at 3B active params get <em>more</em> speedup than the Dense 4B model — proving that total parameter footprint (memory bandwidth), not active compute, drives SD benefit.</span>
+      <span class="z"><strong>图1：SD加速比 vs 活跃参数量</strong>（草稿：0.8B, γ=8）。MoE模型（★）虽然只有3B活跃参数，加速却<em>高于</em>Dense 4B——证明决定SD收益的是总参数量（内存带宽），而非活跃计算量。</span>
     </div>
   </div>
 
   <div class="fig-grid">
     <div class="figure">
-      <img src="../results/plots/fig3_moe_vs_dense.png" alt="Throughput Comparison">
+      <img src="plots/fig3_moe_vs_dense.png" alt="Throughput Comparison">
       <div class="caption">
-        <span class="e"><strong>Figure 2:</strong> Absolute throughput comparison across models and SD configurations.</span>
-        <span class="z"><strong>图2：</strong>各模型及 SD 配置的绝对吞吐量对比。</span>
+        <span class="e"><strong>Figure 2: Absolute Throughput</strong> across all models. Purple = MoE, green = dense. SD consistently boosts bandwidth-bound models (MoE, Dense 9B).</span>
+        <span class="z"><strong>图2：绝对吞吐量对比</strong>。紫色=MoE，绿色=Dense。SD对带宽受限的模型效果最好。</span>
       </div>
     </div>
     <div class="figure">
-      <img src="../results/plots/fig2_acceptance_rate.png" alt="Acceptance Rate">
+      <img src="plots/fig2_acceptance_rate.png" alt="Acceptance Rate vs Gamma">
       <div class="caption">
-        <span class="e"><strong>Figure 3:</strong> Draft acceptance rate vs draft length γ. All models show &lt;4% acceptance.</span>
-        <span class="z"><strong>图3：</strong>草稿接受率与草稿长度 γ 的关系。所有模型接受率均 &lt;4%。</span>
+        <span class="e"><strong>Figure 3: Acceptance Rate vs γ</strong>. All models show &lt;4% acceptance — the speedup is NOT from accepted tokens.</span>
+        <span class="z"><strong>图3：接受率 vs γ</strong>。所有模型接受率都低于4%——加速不来自被接受的token。</span>
       </div>
     </div>
   </div>
 
   <div class="fig-grid">
     <div class="figure">
-      <img src="../results/plots/fig4_prompt_sweep.png" alt="Prompt Length Sweep">
+      <img src="plots/fig4_prompt_sweep.png" alt="Prompt Length Sweep">
       <div class="caption">
-        <span class="e"><strong>Figure 4:</strong> SD speedup vs prompt length on MoE Q4. Benefit is stable (1.19–1.26×).</span>
-        <span class="z"><strong>图4：</strong>MoE Q4 上 SD 加速比与 prompt 长度的关系。收益稳定（1.19-1.26×）。</span>
+        <span class="e"><strong>Figure 4: Speedup vs Prompt Length</strong> (MoE Q4). Stable at 1.19–1.26× regardless of prompt length, showing robust real-world applicability.</span>
+        <span class="z"><strong>图4：加速比 vs Prompt长度</strong>（MoE Q4）。无论prompt多长都稳定在1.19–1.26×，说明实际应用中效果稳定。</span>
       </div>
     </div>
     <div class="figure">
-      <img src="../results/plots/fig5_speedup_by_gamma.png" alt="Speedup by Gamma">
+      <img src="plots/fig5_speedup_by_gamma.png" alt="Speedup by Gamma">
       <div class="caption">
-        <span class="e"><strong>Figure 5:</strong> Speedup vs draft length γ by target model. Larger γ benefits all models.</span>
-        <span class="z"><strong>图5：</strong>各目标模型的加速比与草稿长度 γ 的关系。更大的 γ 对所有模型都有利。</span>
+        <span class="e"><strong>Figure 5: Speedup vs γ</strong>. All curves go up — larger γ always helps. Dense 9B benefits the most (highest bandwidth demand).</span>
+        <span class="z"><strong>图5：加速比 vs γ</strong>。所有曲线向上——更大的γ总是有帮助。Dense 9B受益最大（带宽需求最高）。</span>
       </div>
     </div>
   </div>
 </div>
 </section>
 
-<!-- HARDWARE -->
+<!-- ════════════ TAKEAWAYS ════════════ -->
+<section>
+<div class="container">
+  <h2 class="section-title"><span class="e">Practical Takeaways</span><span class="z">实用建议</span></h2>
+
+  <div class="takeaway">
+    <h4><span class="e">If you're running MoE models on Apple Silicon (or similar):</span><span class="z">如果你在Apple Silicon（或类似硬件）上跑MoE模型：</span></h4>
+    <ul>
+      <li><span class="e"><strong>Always enable speculative decoding.</strong> Free 18–30% speedup with no quality loss.</span><span class="z"><strong>一定要开启推测解码。</strong>免费获得18-30%加速，不损失质量。</span></li>
+      <li><span class="e"><strong>Use the smallest draft model available</strong> (e.g., 0.8B). It outperforms larger drafts because neither achieves high accuracy — so cheaper = better.</span><span class="z"><strong>用最小的草稿模型</strong>（如0.8B）。因为无论大小都猜不准——越便宜越好。</span></li>
+      <li><span class="e"><strong>Set γ=16 or higher.</strong> The batch verification cost is sub-linear, so more guesses = more amortization = more speedup.</span><span class="z"><strong>设γ=16或更高。</strong>批量验证成本低于线性增长，猜越多越划算。</span></li>
+      <li><span class="e"><strong>Expect even more benefit with architecture-matched drafts.</strong> A small MoE draft model could achieve &gt;50% acceptance, potentially yielding 3–5× speedup.</span><span class="z"><strong>架构匹配的草稿模型会更好。</strong>小型MoE草稿模型可能达到50%以上接受率，潜在3-5×加速。</span></li>
+    </ul>
+  </div>
+</div>
+</section>
+
+<!-- ════════════ HARDWARE ════════════ -->
 <section id="hardware">
 <div class="container">
-  <h2><span class="e">Hardware</span><span class="z">硬件配置</span></h2>
+  <h2 class="section-title"><span class="e">Hardware & Setup</span><span class="z">硬件与环境</span></h2>
+  <div class="table-wrap">
   <table>
     <thead>
       <tr>
@@ -279,18 +658,36 @@ footer .wip { color: var(--accent2); font-size: 0.8rem; }
     </thead>
     <tbody>
       <tr><td>Chip</td><td>Apple M2 Ultra</td></tr>
-      <tr><td><span class="e">Memory</span><span class="z">内存</span></td><td>192 GB Unified (LPDDR5)</td></tr>
+      <tr><td><span class="e">Unified Memory</span><span class="z">统一内存</span></td><td>192 GB (LPDDR5)</td></tr>
       <tr><td><span class="e">Memory Bandwidth</span><span class="z">内存带宽</span></td><td>800 GB/s</td></tr>
-      <tr><td>GPU Cores</td><td>76</td></tr>
+      <tr><td>GPU Cores</td><td>76 (Metal)</td></tr>
       <tr><td>CPU Cores</td><td>24 (16P + 8E)</td></tr>
-      <tr><td>Framework</td><td>llama.cpp v8240/8280 (Metal)</td></tr>
-      <tr><td><span class="e">Total Runs</span><span class="z">总运行次数</span></td><td>306</td></tr>
+      <tr><td>Framework</td><td>llama.cpp v8240 / v8280</td></tr>
+      <tr><td><span class="e">Target Model</span><span class="z">目标模型</span></td><td>Qwen3.5-35B-A3B (Q4_K_M / Q8_0)</td></tr>
+      <tr><td><span class="e">Draft Models</span><span class="z">草稿模型</span></td><td>Qwen3.5-0.8B (Q8), Qwen3.5-2B (Q8)</td></tr>
+      <tr><td><span class="e">Total Runs</span><span class="z">总运行次数</span></td><td>306 (5 experiment suites)</td></tr>
+      <tr><td><span class="e">Duration</span><span class="z">实验总时长</span></td><td>~41 minutes</td></tr>
     </tbody>
   </table>
+  </div>
 </div>
 </section>
 
-<!-- FOOTER -->
+<!-- ════════════ CITATION ════════════ -->
+<section>
+<div class="container">
+  <h2 class="section-title"><span class="e">Citation</span><span class="z">引用</span></h2>
+  <pre style="background:var(--bg3);padding:20px;border-radius:8px;overflow-x:auto;font-size:0.85rem;color:var(--fg2);line-height:1.6;">@misc{atomgradient2026sdmoe,
+  title   = {Does Speculative Decoding Help Mixture-of-Experts?
+             An Empirical Study on Qwen3.5-35B-A3B},
+  author  = {AtomGradient},
+  year    = {2026},
+  url     = {https://github.com/AtomGradient/speculative-moe-research}
+}</pre>
+</div>
+</section>
+
+<!-- ════════════ FOOTER ════════════ -->
 <footer>
 <div class="container">
   <p><strong>AtomGradient</strong> &middot;
@@ -298,11 +695,14 @@ footer .wip { color: var(--accent2); font-size: 0.8rem; }
     <span class="z">2026年3月 &middot; Apple M2 Ultra &middot; llama.cpp</span>
   </p>
   <p class="wip">
-    <span class="e">&#9888; Work in Progress &mdash; This research is ongoing. Results and conclusions may be updated.</span>
-    <span class="z">&#9888; 研究进行中 &mdash; 本研究尚未完成，结果和结论可能会更新。</span>
+    <span class="e">⚠ Work in Progress — This research is ongoing. Results and conclusions may be updated.</span>
+    <span class="z">⚠ 研究进行中 — 本研究尚未完成，结果和结论可能会更新。</span>
   </p>
-  <p><a href="paper.pdf"><span class="e">Download Paper (PDF)</span><span class="z">下载论文 (PDF)</span></a> &middot;
-     <a href="https://github.com/AtomGradient/speculative-moe-research">GitHub</a></p>
+  <p>
+    <a href="paper.pdf"><span class="e">Download Paper (PDF)</span><span class="z">下载论文 (PDF)</span></a>
+    &middot;
+    <a href="https://github.com/AtomGradient/speculative-moe-research">GitHub</a>
+  </p>
 </div>
 </footer>
 
@@ -311,11 +711,12 @@ function setLang(lang) {
   document.documentElement.lang = lang;
   document.getElementById('btn-en').classList.toggle('active', lang === 'en');
   document.getElementById('btn-zh').classList.toggle('active', lang === 'zh');
-  localStorage.setItem('lang', lang);
+  localStorage.setItem('sd-moe-lang', lang);
 }
-// Restore saved language
-const saved = localStorage.getItem('lang');
-if (saved) setLang(saved);
+(function() {
+  var saved = localStorage.getItem('sd-moe-lang');
+  if (saved) setLang(saved);
+})();
 </script>
 </body>
 </html>

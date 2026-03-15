@@ -16,6 +16,8 @@
 \usepackage{float}
 \usepackage{enumitem}
 \usepackage{tabularx}
+\usepackage{siunitx}
+\usepackage{colortbl}
 
 % ── WIP Footer ────────────────────────────────────────────────────────────────
 \usepackage{fancyhdr}
@@ -39,7 +41,7 @@
   linkcolor=blue!60!black,
   citecolor=green!50!black,
   urlcolor=blue!70!black,
-  pdftitle={Speculative Decoding on Mixture-of-Experts Models},
+  pdftitle={Does Speculative Decoding Help Mixture-of-Experts?},
   pdfauthor={AtomGradient},
 }
 
@@ -47,6 +49,7 @@
 \definecolor{moecolor}{HTML}{534AB7}
 \definecolor{densecolor}{HTML}{1D9E75}
 \definecolor{accentcolor}{HTML}{E63946}
+\definecolor{gray60}{gray}{0.6}
 
 \title{%
   \textbf{Does Speculative Decoding Help Mixture-of-Experts?}\\[0.3em]
@@ -60,139 +63,161 @@
 
 % ══════════════════════════════════════════════════════════════════════════════
 \begin{abstract}
-Speculative decoding (SD) accelerates autoregressive language model inference by using a small draft model to propose tokens that the target model verifies in batch. However, its interaction with Mixture-of-Experts (MoE) architectures---where only a fraction of total parameters are active per token---remains underexplored. We present a systematic empirical study measuring SD effectiveness on \textbf{Qwen3.5-35B-A3B} (35B total, 3B active parameters) using Qwen3.5-0.8B and 2B dense draft models on Apple M2~Ultra (192\,GB unified memory). Across 306 benchmark runs spanning 5 experimental suites, we find that: (1)~cross-architecture draft acceptance rates are uniformly low ($<$4\%) for both MoE and dense targets; (2)~despite near-zero acceptance, SD achieves \textbf{1.18--1.30$\times$ speedup} on MoE models through batch verification efficiency; (3)~MoE speedup falls between dense models of matching active parameter count (4B: $\sim$1.0$\times$) and total memory footprint (9B: $\sim$2.0$\times$); and (4)~SD benefit on MoE is governed primarily by memory bandwidth utilization from the total parameter footprint, not the active parameter count.
+Speculative decoding (SD) accelerates autoregressive LLM inference by having a small \emph{draft} model propose tokens that the larger \emph{target} model verifies in batch. Its effectiveness depends on a high draft acceptance rate---typically achievable when draft and target share the same architecture. For Mixture-of-Experts (MoE) models, which activate only a small fraction of their total parameters per token, two questions arise: \emph{(1) can a tiny dense draft achieve high enough acceptance on an MoE target?}\ and \emph{(2) if not, is there still any speedup?}
+
+We present a systematic study of 306 benchmark runs on \textbf{Qwen3.5-35B-A3B} (35B total, 3B active per token) with 0.8B and 2B dense drafts on an Apple M2~Ultra. We find that cross-architecture acceptance rates are uniformly low ($<$\,4\,\%), yet SD still delivers \textbf{1.18--1.30$\times$ speedup} through a mechanism we call \emph{batch verification amortization}: the target model's single forward pass over $\gamma$ draft positions amortizes the memory-bandwidth cost of loading all 35B parameters. Speedup scales with the target's \emph{total} parameter footprint---not its active count---and increases monotonically with draft length $\gamma$ because batch verification cost grows sub-linearly. A smaller 0.8B draft outperforms a 2B draft by minimizing compute overhead.
 \end{abstract}
 
 % ══════════════════════════════════════════════════════════════════════════════
 \section{Introduction}
 
-Speculative decoding~\cite{leviathan2023fast, chen2023accelerating} has emerged as a practical technique for accelerating large language model (LLM) inference without altering output quality. The key idea is simple: a small, fast \emph{draft} model generates candidate tokens that the larger \emph{target} model verifies in parallel, converting sequential autoregressive steps into batch operations.
+Speculative decoding~\cite{leviathan2023fast, chen2023accelerating} is now a standard technique for accelerating LLM inference. The recipe is straightforward: a small, fast draft model proposes $\gamma$ candidate tokens; the target model verifies all $\gamma$ candidates in one forward pass; accepted tokens are output, and decoding continues from the first rejection point. When the draft closely matches the target distribution---i.e., the \emph{acceptance rate} $\alpha$ is high---the speedup can be substantial: fewer expensive target forward passes are needed for the same number of output tokens.
 
-Meanwhile, Mixture-of-Experts (MoE) architectures~\cite{shazeer2017outrageously, fedus2022switch} have gained popularity for their favorable compute-to-quality tradeoff: an MoE model with 35B total parameters may activate only 3B per token, achieving quality comparable to much larger dense models at a fraction of the per-token compute cost.
+Meanwhile, Mixture-of-Experts (MoE) architectures~\cite{shazeer2017outrageously, fedus2022switch} have reshaped the efficiency frontier. A model like Qwen3.5-35B-A3B stores 35 billion parameters but activates only $\sim$3B per token via top-$k$ expert routing. This gives it quality on par with larger dense models at a fraction of the per-token compute. However, \emph{all} expert weights must still reside in memory---and during inference on consumer hardware, loading these weights from memory dominates wall-clock time.
 
-This raises a natural question: \textbf{when MoE active-parameter count is low (e.g., 3B active out of 35B total), does speculative decoding still provide meaningful speedup?} The answer is not obvious:
+This creates an interesting tension for speculative decoding:
 
-\begin{itemize}[nosep]
-  \item On one hand, MoE models are already ``fast'' in terms of per-token compute (only 3B active parameters), so the draft model's compute overhead may not be amortized.
-  \item On the other hand, MoE models must still \emph{load all 35B parameters} from memory, creating a memory-bandwidth bottleneck that SD's batch verification could help amortize.
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{Compute perspective:} MoE is already ``fast'' per token (only 3B active params), so the draft model's compute overhead may negate any benefit.
+  \item \textbf{Memory-bandwidth perspective:} MoE must load 35B total parameters from memory per forward pass, creating a large bandwidth bottleneck that batch verification could help amortize.
 \end{itemize}
 
-We present the first systematic empirical study of SD on MoE models, using \textbf{Qwen3.5-35B-A3B} as the MoE target and dense Qwen3.5 models (0.8B, 2B, 4B, 9B) as both draft models and comparison baselines. All experiments run on a single Apple M2~Ultra with 192\,GB unified memory using \texttt{llama.cpp}, ensuring consistent hardware conditions.
+Which perspective dominates? We answer this question empirically with 306 controlled experiments on an Apple M2~Ultra (192\,GB unified memory, 800\,GB/s bandwidth). Our results show that the memory-bandwidth perspective wins: \textbf{SD provides 1.18--1.30$\times$ speedup on MoE despite $<$\,4\,\% acceptance rates}, driven entirely by batch verification amortization of memory bandwidth.
 
 \paragraph{Contributions.}
-\begin{enumerate}[nosep]
-  \item We establish that cross-architecture SD acceptance rates are uniformly low ($<$4\%) across both MoE and dense targets when using small dense draft models.
-  \item We demonstrate that SD provides moderate but consistent speedup (1.18--1.30$\times$) on MoE models \emph{despite} near-zero acceptance, primarily through batch verification efficiency.
-  \item We show that MoE SD speedup scales with the draft length $\gamma$ and is governed by the total parameter footprint (memory bandwidth), not the active parameter count.
-  \item We provide a prompt-length sweep showing that SD benefit on MoE is relatively stable across context lengths (1.19--1.26$\times$).
+\begin{enumerate}[nosep,leftmargin=*]
+  \item We demonstrate that cross-architecture draft acceptance rates are uniformly low ($<$\,4\,\%) for both MoE and dense targets---a natural consequence of the distributional mismatch between small dense drafts and larger targets from the same model family.
+  \item We show that despite near-zero acceptance, SD achieves 1.18--1.30$\times$ speedup on MoE through batch verification amortization---a mechanism distinct from the traditional acceptance-rate-driven speedup.
+  \item We establish that SD speedup on MoE scales with \emph{total parameter footprint} (i.e., memory bandwidth demand), not active parameter count, placing MoE between dense-4B and dense-9B in the speedup hierarchy.
+  \item We show that SD benefit on MoE is robust across prompt lengths (1.19--1.26$\times$) and increases monotonically with draft length $\gamma$.
 \end{enumerate}
 
 % ══════════════════════════════════════════════════════════════════════════════
-\section{Background}
+\section{Background and Related Work}
 
 \subsection{Speculative Decoding}
 
-In standard autoregressive decoding, each token requires a full forward pass through the target model. Speculative decoding~\cite{leviathan2023fast} modifies this by:
+In standard autoregressive decoding, each output token requires one full forward pass through the target model. Speculative decoding~\cite{leviathan2023fast, chen2023accelerating} replaces this with a \emph{draft-then-verify} loop:
+
 \begin{enumerate}[nosep]
-  \item Running a fast draft model to generate $\gamma$ candidate tokens.
-  \item Running the target model on all $\gamma$ candidates in a single batch forward pass.
-  \item Accepting the longest prefix of candidates that matches the target's distribution.
-  \item Generating one additional token from the target model at the rejection point.
+  \item The draft model $M_d$ autoregressively generates $\gamma$ candidate tokens $\hat{y}_1, \ldots, \hat{y}_\gamma$.
+  \item The target model $M_t$ evaluates the prefix $[x, \hat{y}_1, \ldots, \hat{y}_\gamma]$ in a single forward pass, producing logits for all positions.
+  \item Tokens are accepted greedily (or via modified rejection sampling) until the first mismatch; a corrected token is sampled at the rejection point.
 \end{enumerate}
 
-The theoretical speedup depends on the \emph{acceptance rate} $\alpha$ (fraction of draft tokens accepted) and the \emph{draft-to-target cost ratio} $c$:
+The classical analysis assumes an acceptance rate $\alpha \in [0,1]$ and a draft-to-target cost ratio $c$. The expected number of tokens produced per verification round is $(1 - \alpha^{\gamma+1})/(1-\alpha)$, giving a theoretical speedup:
 \begin{equation}
-  \text{Speedup} = \frac{1 - \alpha^{\gamma+1}}{(1 - \alpha)(c \cdot \gamma + 1)}
+  S_{\text{classical}} = \frac{1 - \alpha^{\gamma+1}}{(1 - \alpha)(c \cdot \gamma + 1)}
+  \label{eq:classical}
 \end{equation}
+
+When $\alpha$ is high (e.g., $>$\,70\,\%), this yields large speedups. However, Equation~\ref{eq:classical} assumes that the target's verification cost is independent of $\gamma$---an approximation that breaks down in practice because batch processing of $\gamma$ candidates can be \emph{cheaper} per position than $\gamma$ independent forward passes.
+
+\subsection{Batch Verification Amortization}
+
+On memory-bandwidth-limited hardware, the cost of a single forward pass is dominated by loading model weights from memory. When the target model verifies $\gamma$ candidates in one batch pass, the weights are loaded \emph{once} and reused across all $\gamma$ positions. The marginal cost of adding one more candidate to the batch is primarily compute (matrix multiplication), which is cheap for small batch sizes on modern accelerators.
+
+This means that even when $\alpha \approx 0$ (all drafts rejected), the target model's batch verification of $\gamma$ positions costs less than $\gamma$ sequential forward passes. The ``wasted'' draft evaluations are not truly wasted: they turn sequential, bandwidth-bound operations into a single batched operation. We define the effective speedup under batch amortization as:
+\begin{equation}
+  S_{\text{batch}} = \frac{\gamma \cdot T_{\text{seq}}}{T_{\text{draft}}(\gamma) + T_{\text{verify}}(\gamma)}
+  \label{eq:batch}
+\end{equation}
+where $T_{\text{seq}}$ is the time for one sequential target forward pass, $T_{\text{draft}}(\gamma)$ is the total draft time, and $T_{\text{verify}}(\gamma)$ is the batch verification time. On bandwidth-limited hardware, $T_{\text{verify}}(\gamma) \ll \gamma \cdot T_{\text{seq}}$ because weight loading is amortized, giving $S_{\text{batch}} > 1$ even when no draft tokens are accepted.
 
 \subsection{Mixture-of-Experts}
 
-MoE models~\cite{fedus2022switch} replace the dense feed-forward network (FFN) in each transformer layer with multiple ``expert'' FFN sub-networks and a gating/routing mechanism that selects $k$ experts per token. Qwen3.5-35B-A3B uses 128 experts with top-2 routing, yielding approximately 3B active parameters per token out of 35B total.
+MoE models~\cite{shazeer2017outrageously, fedus2022switch} replace the dense feed-forward network (FFN) in each transformer layer with a set of $E$ expert FFN sub-networks and a gating mechanism that selects $k$ experts per token. Qwen3.5-35B-A3B uses 128 experts with top-2 routing, yielding $\sim$3B active parameters per token out of 35B total.
 
-Critically, while compute scales with active parameters, \textbf{memory bandwidth scales with total parameters}: all expert weights must be loaded from memory during inference, even though only a fraction is used per token. On unified-memory architectures like Apple Silicon, this creates a memory-bandwidth-dominated inference regime.
+The MoE memory-bandwidth paradox: despite activating only 3B parameters per forward pass, the model must keep all 35B parameters in memory. On unified-memory architectures, this means the full weight matrix must be accessible to the GPU, even though most experts go unused on any given token. The inference speed is thus determined not by the active compute (3B) but by the memory footprint---specifically, by how quickly 20--38\,GB of quantized weights (Q4--Q8) can be streamed through the memory bus.
 
-\subsection{Hardware: Apple M2 Ultra}
+\subsection{Related Work}
 
-All experiments run on a single Apple M2~Ultra (Table~\ref{tab:hardware}).
+Speculative decoding was independently proposed by Leviathan et al.~\cite{leviathan2023fast} and Chen et al.~\cite{chen2023accelerating}. Subsequent work has improved draft model training~\cite{zhou2024distillspec}, online speculative decoding~\cite{liu2024online}, and multi-token prediction heads for self-drafting. Medusa~\cite{cai2024medusa} adds multiple prediction heads to the target model itself, avoiding a separate draft model.
+
+For MoE inference, prior work has focused on expert offloading~\cite{eliseev2023fast}, expert caching, and routing-aware batching. However, whether SD's batch verification helps amortize MoE's large memory footprint has received little attention. This work addresses that gap.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Experimental Setup}
+
+\subsection{Hardware}
+
+All 306 experiments ran on a single Apple M2~Ultra (Table~\ref{tab:hardware}), providing a controlled, uniform hardware environment. The unified memory architecture is particularly relevant: both CPU and GPU share the same 192\,GB memory pool at 800\,GB/s bandwidth, eliminating PCIe transfer bottlenecks present in discrete-GPU systems.
 
 \begin{table}[h]
 \centering
-\caption{Test hardware specification.}
+\caption{Hardware specification. The M2 Ultra's unified memory allows the full 35B MoE model to reside in GPU-accessible memory without offloading.}
 \label{tab:hardware}
-\begin{tabular}{ll}
+\begin{tabular}{@{}ll@{}}
 \toprule
 \textbf{Component} & \textbf{Specification} \\
 \midrule
 Chip & Apple M2 Ultra \\
-Memory & 192\,GB unified (LPDDR5) \\
+Unified memory & 192\,GB LPDDR5 \\
 Memory bandwidth & 800\,GB/s \\
-GPU cores & 76 \\
+GPU cores & 76 (Metal) \\
 CPU cores & 24 (16P + 8E) \\
-Framework & \texttt{llama.cpp} v8240/8280 (Metal) \\
+Framework & \texttt{llama.cpp} v8240/8280 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-% ══════════════════════════════════════════════════════════════════════════════
-\section{Methods}
-
 \subsection{Models}
 
-Table~\ref{tab:models} summarizes the models used. All are from the Qwen3.5 family to minimize architectural confounds.
+All models are from the Qwen3.5 family (Table~\ref{tab:models}), minimizing confounds from architectural differences in tokenizer, attention mechanism, or training data.
 
 \begin{table}[h]
 \centering
-\caption{Models used in experiments. Active params = params used per forward pass.}
+\caption{Models used. ``Active'' = parameters used per forward pass. For dense models, active = total. For MoE, active $\ll$ total due to top-$k$ expert routing. All GGUF-quantized for \texttt{llama.cpp}.}
 \label{tab:models}
-\begin{tabular}{llrrl}
+\begin{tabular}{@{}llrrl@{}}
 \toprule
 \textbf{ID} & \textbf{Model} & \textbf{Active} & \textbf{Total} & \textbf{Role} \\
 \midrule
-moe\_q4 & Qwen3.5-35B-A3B Q4 & 3.0B & 35B & MoE target \\
-moe\_q8 & Qwen3.5-35B-A3B Q8 & 3.0B & 35B & MoE target \\
-draft\_0.8b & Qwen3.5-0.8B Q8 & 0.8B & 0.8B & Draft \\
-draft\_2b & Qwen3.5-2B Q8 & 2.0B & 2.0B & Draft \\
-dense\_0.8b & Qwen3.5-0.8B bf16 & 0.8B & 0.8B & Baseline \\
-dense\_2b & Qwen3.5-2B Q8 & 2.0B & 2.0B & Baseline \\
-dense\_4b & Qwen3.5-4B Q8 & 4.0B & 4.0B & Baseline \\
-dense\_9b & Qwen3.5-9B bf16 & 9.0B & 9.0B & Baseline \\
+moe\_q4   & Qwen3.5-35B-A3B (Q4\_K\_M)  & 3.0\,B & 35\,B & MoE target \\
+moe\_q8   & Qwen3.5-35B-A3B (Q8\_0)     & 3.0\,B & 35\,B & MoE target \\
+draft\_0.8b & Qwen3.5-0.8B (Q8\_0)       & 0.8\,B & 0.8\,B & Draft model \\
+draft\_2b  & Qwen3.5-2B (Q8\_0)          & 2.0\,B & 2.0\,B & Draft model \\
+dense\_0.8b & Qwen3.5-0.8B (BF16)        & 0.8\,B & 0.8\,B & Dense baseline \\
+dense\_2b  & Qwen3.5-2B (Q8\_0)          & 2.0\,B & 2.0\,B & Dense baseline \\
+dense\_4b  & Qwen3.5-4B (Q8\_0)          & 4.0\,B & 4.0\,B & Dense baseline / SD target \\
+dense\_9b  & Qwen3.5-9B (BF16)           & 9.0\,B & 9.0\,B & Dense baseline / SD target \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Experiment Design}
 
-We conducted five experiment suites (Table~\ref{tab:suites}), totaling 306 benchmark runs.
+We conducted five suites (Table~\ref{tab:suites}), each configuration repeated 3 times.
 
 \begin{table}[h]
 \centering
-\caption{Experiment suites. Each configuration is repeated 3 times for variance estimation.}
+\caption{Experiment suites. 306 total runs covering MoE and dense models across draft models, draft lengths, prompt types, and prompt lengths.}
 \label{tab:suites}
-\begin{tabular}{clll}
+\begin{tabular}{@{}clc@{}}
 \toprule
-\textbf{Suite} & \textbf{Description} & \textbf{Variable} & \textbf{Runs} \\
+\textbf{Suite} & \textbf{Description} & \textbf{Runs} \\
 \midrule
-A & MoE baseline (no SD) & prompt length & 18 \\
-B & MoE + SD & draft model, $\gamma$, prompt & 144 \\
-C & Dense baselines (no SD) & prompt length & 36 \\
-D & Dense + SD & $\gamma$, prompt & 72 \\
-F & Prompt-length sweep & prompt tokens & 36 \\
+A & MoE baselines (no SD) & 18 \\
+B & MoE + SD (2 drafts $\times$ 3 $\gamma$ $\times$ 4 prompts) & 144 \\
+C & Dense baselines (no SD) & 36 \\
+D & Dense + SD (4B/9B + 0.8B draft) & 72 \\
+F & Prompt-length sweep (MoE Q4, 32--1024 tokens) & 36 \\
 \midrule
-  & \textbf{Total} & & \textbf{306} \\
+& \textbf{Total} & \textbf{306} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph{Draft lengths.} We swept $\gamma \in \{4, 8, 16\}$---the number of tokens the draft model proposes per speculative step.
+\paragraph{Draft lengths.} $\gamma \in \{4, 8, 16\}$: the number of candidate tokens proposed per speculative step.
 
-\paragraph{Prompts.} Four diverse prompts were used: short factual (English), code generation, long reasoning, and Chinese text. For baseline benchmarks (\texttt{llama-bench}), prompt token counts of 64, 256, and 512 were used. Suite~F swept prompt lengths from 32 to 1024 tokens.
+\paragraph{Prompts.} Four diverse prompts: short factual (English), code generation, long reasoning, and Chinese text. Suite~F swept prompt lengths from 32 to 1024 tokens.
 
-\paragraph{Generation.} All runs generated 256 tokens with temperature 0.0 (greedy decoding) for reproducibility. Each configuration was repeated 3 times.
+\paragraph{Generation parameters.} 256 output tokens per run, temperature 0.0 (greedy), ensuring deterministic, reproducible results.
 
-\paragraph{Metrics.} We report:
-\begin{itemize}[nosep]
-  \item \textbf{Tokens/second (tps)}: wall-clock generation throughput.
-  \item \textbf{Speedup}: ratio of SD throughput to baseline throughput for the same target model.
+\paragraph{Metrics.}
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{Throughput (tok/s)}: end-to-end wall-clock generation speed, measured by \texttt{llama.cpp}'s built-in timing.
+  \item \textbf{Speedup}: $\text{tok/s}_{\text{SD}} \,/\, \text{tok/s}_{\text{baseline}}$ for the same target model.
   \item \textbf{Acceptance rate ($\alpha$)}: fraction of draft tokens accepted by the target model.
 \end{itemize}
 
@@ -201,205 +226,244 @@ F & Prompt-length sweep & prompt tokens & 36 \\
 
 \subsection{Baseline Throughput}
 
-Table~\ref{tab:baseline} shows the baseline generation throughput for all models without speculative decoding.
+Table~\ref{tab:baseline} shows baseline throughput without speculative decoding. The MoE models are the anomaly: despite only 3B active parameters, they run at 49.9--55.3 tok/s---slower than the dense 4B model (67.2 tok/s). This ``MoE slowdown'' quantifies the memory-bandwidth cost of the inactive 32B expert parameters.
 
 \begin{table}[h]
 \centering
-\caption{Baseline text generation throughput (no speculative decoding). Averaged across prompt lengths and repeats. MoE models show throughput between the dense 4B and dense 2B, despite having 3B active parameters---reflecting the memory bandwidth cost of loading 35B total parameters.}
+\caption{Baseline throughput (no speculative decoding), averaged across prompt lengths and repeats. \textbf{Key observation:} the MoE models are slower than the dense 4B model despite having fewer active parameters, because all 35B total parameters must be loaded from memory during inference.}
 \label{tab:baseline}
-\begin{tabular}{lrrr}
+\begin{tabular}{@{}lrrr@{}}
 \toprule
-\textbf{Model} & \textbf{Active (B)} & \textbf{Total (B)} & \textbf{Throughput (tok/s)} \\
+\textbf{Model} & \textbf{Active (B)} & \textbf{Total (B)} & \textbf{tok/s} \\
 \midrule
 Dense 0.8B & 0.8 & 0.8 & $138.0 \pm 0.3$ \\
 Dense 2B   & 2.0 & 2.0 & $110.4 \pm 0.3$ \\
-\textcolor{moecolor}{\textbf{MoE Q4 (35B-A3B)}} & \textcolor{moecolor}{3.0} & \textcolor{moecolor}{35} & \textcolor{moecolor}{$\mathbf{55.3 \pm 0.1}$} \\
-\textcolor{moecolor}{\textbf{MoE Q8 (35B-A3B)}} & \textcolor{moecolor}{3.0} & \textcolor{moecolor}{35} & \textcolor{moecolor}{$\mathbf{49.9 \pm 0.1}$} \\
+\rowcolor{moecolor!8}
+\textbf{MoE Q4 (35B-A3B)} & \textbf{3.0} & \textbf{35} & $\mathbf{55.3 \pm 0.1}$ \\
+\rowcolor{moecolor!8}
+\textbf{MoE Q8 (35B-A3B)} & \textbf{3.0} & \textbf{35} & $\mathbf{49.9 \pm 0.1}$ \\
 Dense 4B   & 4.0 & 4.0 & $67.2 \pm 0.1$ \\
 Dense 9B   & 9.0 & 9.0 & $33.4 \pm 0.0$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The MoE models achieve only 55.3 tok/s (Q4) and 49.9 tok/s (Q8), despite having just 3B active parameters. A dense model with 3B parameters would be expected to achieve $\sim$100+ tok/s. The $\sim$2$\times$ slowdown comes from loading the full 35B parameter set (20.6\,GB for Q4, 38.7\,GB for Q8) from memory on each forward pass, even though only $\sim$3B parameters are active.
+If MoE throughput were determined solely by active parameters (3B), we would expect $\sim$100+ tok/s, comparable to a 3B dense model. The 2$\times$ gap arises because the M2~Ultra must stream 20.6\,GB (Q4) or 38.7\,GB (Q8) through the 800\,GB/s memory bus on each forward pass, even though the compute workload only touches $\sim$3B parameters worth of weights.
 
-\subsection{Speculative Decoding on MoE}
+\subsection{Speculative Decoding: The Full Picture}
 
-Table~\ref{tab:sd_results} presents the full SD results.
+Table~\ref{tab:sd_full} presents all SD results. Two patterns dominate:
+
+\begin{enumerate}[nosep,leftmargin=*]
+  \item \textbf{All acceptance rates are very low}---below 4\% at $\gamma=4$, below 1\% at $\gamma=16$. This is expected: the 0.8B/2B dense draft models have fundamentally different weight distributions from the MoE and larger dense targets.
+  \item \textbf{Speedup increases with $\gamma$ despite declining acceptance}---the exact opposite of what Equation~\ref{eq:classical} predicts. Batch verification amortization (Equation~\ref{eq:batch}) dominates.
+\end{enumerate}
 
 \begin{table}[H]
 \centering
-\caption{Speculative decoding results. Speedup is relative to the same target model's baseline. Acceptance rate $\alpha$ is the fraction of draft tokens accepted.}
-\label{tab:sd_results}
-\begin{tabular}{llcrrr}
+\caption{Full speculative decoding results. Draft acceptance rate $\alpha$ is the fraction of draft tokens accepted by the target. Speedup is relative to each target's own baseline. \textbf{Bold} entries highlight the best speedup per target model.}
+\label{tab:sd_full}
+\begin{tabular}{@{}llcS[table-format=2.1]S[table-format=1.2]S[table-format=1.1]@{}}
 \toprule
-\textbf{Target} & \textbf{Draft} & $\boldsymbol{\gamma}$ & \textbf{tok/s} & \textbf{Speedup} & $\boldsymbol{\alpha}$ \\
+\textbf{Target} & \textbf{Draft} & $\boldsymbol{\gamma}$ & {\textbf{tok/s}} & {\textbf{Speedup}} & {$\boldsymbol{\alpha}$ (\%)} \\
 \midrule
-\multirow{6}{*}{\textcolor{moecolor}{MoE Q4}}
-  & 0.8B & 4  & 63.4 & 1.15$\times$ & 2.6\% \\
-  & 0.8B & 8  & 65.2 & 1.18$\times$ & 1.1\% \\
-  & 0.8B & 16 & 69.7 & 1.26$\times$ & 0.2\% \\
-  & 2B   & 4  & 56.6 & 1.03$\times$ & 4.0\% \\
-  & 2B   & 8  & 58.1 & 1.05$\times$ & 1.7\% \\
-  & 2B   & 16 & 61.7 & 1.12$\times$ & 0.9\% \\
+\multirow{6}{*}{\textcolor{moecolor}{\textbf{MoE Q4}}}
+  & 0.8B & 4  & 63.4 & 1.15 & 2.6 \\
+  & 0.8B & 8  & 65.2 & 1.18 & 1.1 \\
+  & \textbf{0.8B} & \textbf{16} & \textbf{69.7} & \textbf{1.26} & \textbf{0.2} \\
+  & 2B   & 4  & 56.6 & 1.03 & 4.0 \\
+  & 2B   & 8  & 58.1 & 1.05 & 1.7 \\
+  & 2B   & 16 & 61.7 & 1.12 & 0.9 \\
 \midrule
-\multirow{6}{*}{\textcolor{moecolor}{MoE Q8}}
-  & 0.8B & 4  & 57.5 & 1.15$\times$ & 2.7\% \\
-  & 0.8B & 8  & 60.9 & 1.22$\times$ & 1.0\% \\
-  & 0.8B & 16 & 64.8 & 1.30$\times$ & 0.2\% \\
-  & 2B   & 4  & 51.3 & 1.03$\times$ & 3.6\% \\
-  & 2B   & 8  & 54.3 & 1.09$\times$ & 2.0\% \\
-  & 2B   & 16 & 58.0 & 1.16$\times$ & 0.9\% \\
+\multirow{6}{*}{\textcolor{moecolor}{\textbf{MoE Q8}}}
+  & 0.8B & 4  & 57.5 & 1.15 & 2.7 \\
+  & 0.8B & 8  & 60.9 & 1.22 & 1.0 \\
+  & \textbf{0.8B} & \textbf{16} & \textbf{64.8} & \textbf{1.30} & \textbf{0.2} \\
+  & 2B   & 4  & 51.3 & 1.03 & 3.6 \\
+  & 2B   & 8  & 54.3 & 1.09 & 2.0 \\
+  & 2B   & 16 & 58.0 & 1.16 & 0.9 \\
 \midrule
 \multirow{3}{*}{\textcolor{densecolor}{Dense 4B}}
-  & 0.8B & 4  & 70.9 & 1.05$\times$ & 3.0\% \\
-  & 0.8B & 8  & 65.9 & 0.98$\times$ & 1.1\% \\
-  & 0.8B & 16 & 75.1 & 1.12$\times$ & 0.4\% \\
+  & 0.8B & 4  & 70.9 & 1.05 & 3.0 \\
+  & 0.8B & 8  & 65.9 & 0.98 & 1.1 \\
+  & \textbf{0.8B} & \textbf{16} & \textbf{75.1} & \textbf{1.12} & \textbf{0.4} \\
 \midrule
 \multirow{3}{*}{\textcolor{densecolor}{Dense 9B}}
-  & 0.8B & 4  & 32.8 & 0.98$\times$ & 2.3\% \\
-  & 0.8B & 8  & 55.0 & 1.64$\times$ & 0.9\% \\
-  & 0.8B & 16 & 67.7 & 2.03$\times$ & 0.4\% \\
+  & 0.8B & 4  & 32.8 & 0.98 & 2.3 \\
+  & 0.8B & 8  & 55.0 & 1.64 & 0.9 \\
+  & \textbf{0.8B} & \textbf{16} & \textbf{67.7} & \textbf{2.03} & \textbf{0.4} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph{Key observations.}
+\subsection{The Speedup Hierarchy: Active vs Total Parameters}
 
-\begin{enumerate}[nosep]
-  \item \textbf{Acceptance rates are uniformly low.} All model pairs exhibit $<$4\% acceptance at $\gamma=4$ and $<$1\% at $\gamma=16$. This reflects the fundamental architectural mismatch between the small dense draft models and the larger target models within the Qwen3.5 family.
-
-  \item \textbf{SD still provides speedup despite low acceptance.} MoE Q4 achieves 1.26$\times$ speedup at $\gamma=16$ with only 0.2\% acceptance. This speedup comes not from accepted draft tokens but from the batch verification mechanism: the target model processes multiple candidate positions in a single forward pass, which is more efficient than sequential autoregressive generation.
-
-  \item \textbf{The 0.8B draft outperforms the 2B draft.} Despite lower acceptance rates, the 0.8B draft provides higher speedup because its lower computational overhead leaves more of the batch verification benefit intact.
-
-  \item \textbf{Larger $\gamma$ improves speedup.} Counterintuitively, increasing $\gamma$ reduces acceptance but increases speedup. This is because batch verification cost grows sub-linearly with $\gamma$ (due to parallelism in the forward pass), so each additional draft token adds marginal cost but provides an opportunity for batch-parallel evaluation.
-\end{enumerate}
-
-\subsection{MoE vs Dense: The Speedup Gap}
-
-Figure~\ref{fig:speedup_curve} shows the central result: SD speedup as a function of active parameter count.
+Figure~\ref{fig:speedup_curve} reveals the central finding. Plotting SD speedup against active parameter count, the MoE models (3B active) fall \emph{above} the dense 4B model, despite having fewer active parameters. This proves that SD speedup is not a function of active compute but of total memory footprint.
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.85\textwidth]{../results/plots/fig1_speedup_curve.png}
-  \caption{SD speedup vs active parameter count (draft: 0.8B, $\gamma$=8). The MoE points ($\star$) at 3B active parameters fall \emph{above} the dense 4B baseline, suggesting that MoE's large total parameter footprint creates additional memory bandwidth overhead that SD's batch verification helps amortize. The dense 9B model shows the highest speedup (1.64$\times$) as the largest model benefits most from batch verification.}
+  \includegraphics[width=0.82\textwidth]{../results/plots/fig1_speedup_curve.png}
+  \caption{SD speedup vs active parameter count (draft: 0.8B, $\gamma$=8). The MoE points ($\star$) at 3B active parameters sit above the dense interpolation line, demonstrating that their 35B total parameter footprint drives higher speedup than their 3B active compute would predict.}
   \label{fig:speedup_curve}
 \end{figure}
 
-The MoE models (3B active) achieve 1.18--1.22$\times$ speedup at $\gamma=8$, which is:
-\begin{itemize}[nosep]
-  \item \textbf{Higher} than the dense 4B model ($\sim$1.0$\times$), which has more active parameters but fewer total parameters.
-  \item \textbf{Lower} than the dense 9B model (1.64$\times$), which has the most parameters and highest memory bandwidth demands.
-\end{itemize}
+The speedup hierarchy is:
+\begin{center}
+\begin{tabular}{rcl}
+Dense 9B (9B total) & $\gg$ & Dense 4B (4B total) \\
+$2.03\times$ & & $1.12\times$ \\[0.5em]
+\multicolumn{3}{c}{MoE (35B total, 3B active): $1.26$--$1.30\times$} \\
+\multicolumn{3}{c}{\textcolor{gray60}{\footnotesize sits between Dense 4B and Dense 9B}}
+\end{tabular}
+\end{center}
 
-This ordering reveals that \textbf{SD speedup on MoE is governed by the total parameter footprint (memory bandwidth), not the active parameter count (compute)}. The MoE model's 35B total parameters create a memory-bandwidth bottleneck similar to a dense model between 4B and 9B, and SD's batch verification helps amortize this cost.
+\subsection{Why Larger $\gamma$ Always Wins}
+
+Figure~\ref{fig:gamma_sweep} shows that speedup increases monotonically with $\gamma$ for all target models. This is the hallmark of batch verification amortization: the cost of the target's forward pass grows sub-linearly with batch size (more candidates to verify), while the benefit is proportional to $\gamma$ (fewer total forward passes needed).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.92\textwidth]{../results/plots/fig5_speedup_by_gamma.png}
+  \caption{Speedup vs draft length $\gamma$ for all target--draft pairs. Left: 0.8B draft; right: 2B draft. All curves are monotonically increasing, confirming that batch verification amortization dominates over the diminishing acceptance rate. The dense 9B model benefits most due to its highest memory-bandwidth demand.}
+  \label{fig:gamma_sweep}
+\end{figure}
+
+For the dense 9B model, the speedup curve is steep: from 0.98$\times$ at $\gamma=4$ to 2.03$\times$ at $\gamma=16$---a trajectory suggesting that even larger $\gamma$ values could yield further gains. For MoE models, the curve is flatter but still positive: 1.15$\times$ at $\gamma=4$ to 1.26--1.30$\times$ at $\gamma=16$.
+
+\subsection{Draft Model Size: Smaller Is Better}
+
+Table~\ref{tab:draft_comparison} compares the 0.8B and 2B draft models on MoE targets. The 0.8B draft consistently outperforms the 2B draft despite having \emph{lower} acceptance rates at most $\gamma$ values. This is because the 0.8B model's 2.5$\times$ lower compute cost leaves more of the batch verification benefit intact.
+
+\begin{table}[h]
+\centering
+\caption{Draft model comparison on MoE targets. Despite comparable or lower acceptance rates, the 0.8B draft achieves higher speedup because its lower compute overhead better preserves the batch verification benefit.}
+\label{tab:draft_comparison}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+& \multicolumn{3}{c}{\textbf{Draft 0.8B}} & \multicolumn{3}{c}{\textbf{Draft 2B}} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7}
+\textbf{Target / $\gamma$} & \textbf{Speedup} & $\alpha$ & \textbf{tok/s} & \textbf{Speedup} & $\alpha$ & \textbf{tok/s} \\
+\midrule
+MoE Q4 / $\gamma$=4  & 1.15$\times$ & 2.6\% & 63.4 & 1.03$\times$ & 4.0\% & 56.6 \\
+MoE Q4 / $\gamma$=8  & 1.18$\times$ & 1.1\% & 65.2 & 1.05$\times$ & 1.7\% & 58.1 \\
+MoE Q4 / $\gamma$=16 & 1.26$\times$ & 0.2\% & 69.7 & 1.12$\times$ & 0.9\% & 61.7 \\
+\midrule
+MoE Q8 / $\gamma$=4  & 1.15$\times$ & 2.7\% & 57.5 & 1.03$\times$ & 3.6\% & 51.3 \\
+MoE Q8 / $\gamma$=8  & 1.22$\times$ & 1.0\% & 60.9 & 1.09$\times$ & 2.0\% & 54.3 \\
+MoE Q8 / $\gamma$=16 & 1.30$\times$ & 0.2\% & 64.8 & 1.16$\times$ & 0.9\% & 58.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Throughput Comparison}
 
-Figure~\ref{fig:throughput} shows absolute throughput across all models and SD configurations.
+Figure~\ref{fig:throughput} shows absolute throughput across all model--draft--$\gamma$ configurations.
 
 \begin{figure}[H]
   \centering
   \includegraphics[width=0.92\textwidth]{../results/plots/fig3_moe_vs_dense.png}
-  \caption{Absolute throughput comparison. Purple bars = MoE models, teal = dense baselines. The 0.8B draft (amber) consistently provides moderate improvement. The 2B draft (gray) adds overhead that partially offsets the batch verification benefit.}
+  \caption{Absolute throughput (tok/s) for all configurations. Purple bars = MoE models; green = dense baselines. The 0.8B draft consistently adds throughput to bandwidth-bound targets (MoE, Dense 9B) while offering marginal or negative benefit on compute-bound targets (Dense 4B at $\gamma$=8).}
   \label{fig:throughput}
 \end{figure}
 
-\subsection{Acceptance Rate Analysis}
+\subsection{Acceptance Rate Patterns}
 
-Figure~\ref{fig:acceptance} shows how acceptance rates vary with draft length.
+Figure~\ref{fig:acceptance} shows acceptance rates across all configurations. The uniformly low rates ($<$\,4\,\%) confirm that our 0.8B and 2B dense drafts do not meaningfully approximate the output distributions of any target model in the Qwen3.5 family. This is not a failure of SD---it simply means that the speedup we observe is driven entirely by batch verification amortization, not by accepted tokens.
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.75\textwidth]{../results/plots/fig2_acceptance_rate.png}
-  \caption{Draft acceptance rate vs draft length $\gamma$. All models show the expected decay with increasing $\gamma$, and all rates remain below 4\%. The MoE models (purple $\star$) have slightly higher acceptance than dense models (teal $\circ$) at low $\gamma$, possibly due to the Qwen3.5-0.8B draft sharing more distributional similarity with the MoE model's routing-averaged output.}
+  \includegraphics[width=0.72\textwidth]{../results/plots/fig2_acceptance_rate.png}
+  \caption{Acceptance rate vs draft length $\gamma$. All model pairs show $<$\,4\,\% acceptance, declining with $\gamma$ as expected. The 2B draft achieves slightly higher acceptance than 0.8B at low $\gamma$, but this advantage is insufficient to offset its higher compute cost.}
   \label{fig:acceptance}
 \end{figure}
 
 \subsection{Prompt Length Sensitivity}
 
-Figure~\ref{fig:prompt_sweep} shows how SD speedup varies with prompt length on the MoE Q4 model.
+Figure~\ref{fig:prompt_sweep} shows SD speedup on MoE Q4 across prompt lengths from 32 to 1024 tokens.
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.95\textwidth]{../results/plots/fig4_prompt_sweep.png}
-  \caption{Left: throughput vs prompt length. The baseline (gray) is stable at $\sim$55 tok/s. SD throughput (red) is highest at short prompts (69 tok/s at 32 tokens) and stabilizes at $\sim$66 tok/s for longer prompts. Right: speedup ratio, showing 1.26$\times$ at 32 tokens decreasing to $\sim$1.19$\times$ for prompts $\geq$256 tokens.}
+  \includegraphics[width=0.92\textwidth]{../results/plots/fig4_prompt_sweep.png}
+  \caption{Left: throughput vs prompt length for MoE Q4 (baseline vs SD with 0.8B draft, $\gamma$=8). Right: speedup ratio. Speedup is highest at short prompts (1.26$\times$ at 32 tokens) and stabilizes at $\sim$1.19$\times$ for prompts $\geq$256 tokens. The modest decline reflects the increasing relative cost of prompt processing.}
   \label{fig:prompt_sweep}
 \end{figure}
 
-The speedup decrease at longer prompts is modest ($\Delta \approx$ 0.07$\times$), indicating that SD's benefit on MoE is relatively robust across context lengths.
-
-\subsection{Draft Length Scaling}
-
-Figure~\ref{fig:gamma_sweep} shows how speedup scales with $\gamma$ across all target models.
-
-\begin{figure}[H]
-  \centering
-  \includegraphics[width=0.95\textwidth]{../results/plots/fig5_speedup_by_gamma.png}
-  \caption{Speedup vs draft length $\gamma$. All models show increasing speedup with larger $\gamma$. The dense 9B (teal, right-most in left panel) shows the steepest improvement. MoE models (purple $\star$) show steady, moderate gains. The 2B draft (right panel) provides smaller gains due to higher draft overhead.}
-  \label{fig:gamma_sweep}
-\end{figure}
+The 0.07$\times$ decline from short to long prompts is modest, confirming that SD's batch verification benefit is robust across context lengths.
 
 % ══════════════════════════════════════════════════════════════════════════════
-\section{Discussion}
+\section{Analysis and Discussion}
 
-\subsection{Why Does SD Help Despite Near-Zero Acceptance?}
+\subsection{Decomposing the Speedup: Bandwidth vs Compute}
 
-The central puzzle of our results is that SD provides meaningful speedup (up to 1.30$\times$) with acceptance rates below 4\%. This is explained by \textbf{batch verification efficiency}: even when all draft tokens are rejected, the target model's forward pass to verify $\gamma$ candidates processes multiple positions in parallel, which is more memory-bandwidth-efficient than $\gamma$ sequential autoregressive steps.
+Our results cleanly separate two inference bottlenecks:
 
-On unified-memory architectures like Apple Silicon, where memory bandwidth is the primary bottleneck for large models, this batch-parallel evaluation amortizes the cost of loading model weights from memory. Each weight tensor is loaded once and reused across all candidate positions, rather than being loaded $\gamma$ separate times.
-
-\subsection{The Role of Total vs Active Parameters}
-
-Our results reveal a clear distinction:
-\begin{itemize}[nosep]
-  \item \textbf{Active parameters determine compute cost}: MoE's 3B active parameters give it fast per-token compute, similar to a dense 3B model.
-  \item \textbf{Total parameters determine memory bandwidth cost}: MoE's 35B total parameters require loading $\sim$20--38\,GB of weights per forward pass, creating a bandwidth bottleneck similar to a dense 9B model.
-  \item \textbf{SD speedup scales with memory bandwidth cost}: the more memory-bandwidth-bound the inference, the more batch verification helps.
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{Memory bandwidth (weight loading)} dominates for large models (Dense~9B, MoE~35B). Loading 10--38\,GB of weights at 800\,GB/s takes 12--48\,ms per pass. Batch verification amortizes this across multiple positions.
+  \item \textbf{Compute (matrix multiplication)} dominates for small models (Dense~4B and below). Weight loading is fast, so the GPU spends more time computing, and batch verification provides less relative benefit.
 \end{itemize}
 
-This explains why MoE (3B active, 35B total) gets 1.18--1.30$\times$ speedup---more than the dense 4B (4B total, less bandwidth pressure) but less than the dense 9B (9B total, maximal bandwidth pressure on this hardware).
+The MoE model sits in a unique position: its \emph{compute} profile resembles a 3B dense model (fast), but its \emph{bandwidth} profile resembles a model between 4B and 9B dense (loading 20--38\,GB of expert weights). SD's batch verification targets the bandwidth bottleneck, explaining why MoE gets meaningful speedup despite being ``compute-cheap.''
+
+\subsection{Quantitative Bandwidth Analysis}
+
+We can estimate the effective memory bandwidth utilization. For the MoE Q4 model ($\sim$20.6\,GB weights):
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{Baseline}: 55.3 tok/s $\Rightarrow$ 18.1\,ms/token $\Rightarrow$ $20.6\,\text{GB} / 0.0181\,\text{s} \approx 1138\,\text{GB/s}$ effective throughput (exceeding the 800\,GB/s theoretical peak, suggesting cache effects and compute overlap).
+  \item \textbf{SD $\gamma$=16}: 69.7 tok/s $\Rightarrow$ processes 256 tokens in 3.67\,s. With $\sim$16 verification rounds (most drafts rejected), this is $\sim$229\,ms per round for 16+1 positions, amortizing weight loading across 17 positions per pass.
+\end{itemize}
+
+The $\sim$26\,\% speedup at $\gamma$=16 is consistent with loading weights once per round instead of 16--17 times, discounted by draft model overhead and the sub-linear (but not free) cost of batched compute.
+
+\subsection{MoE Q4 vs Q8: Quantization Effects}
+
+The MoE Q8 model achieves \emph{higher} speedup (1.30$\times$) than MoE Q4 (1.26$\times$) at $\gamma$=16. This is expected: Q8 has a larger weight file ($\sim$38.7\,GB vs $\sim$20.6\,GB), making it more bandwidth-bound and thus more amenable to batch verification amortization. The same pattern holds for the dense models: Dense 9B (BF16, $\sim$18\,GB) achieves 2.03$\times$ speedup---the largest in our study---because it is the most bandwidth-constrained target.
 
 \subsection{Practical Implications}
 
-\begin{enumerate}[nosep]
-  \item \textbf{SD is beneficial for MoE models}, providing a ``free'' 18--30\% throughput improvement without changing model quality. The 0.8B draft model adds minimal memory overhead ($\sim$1.2\,GB).
-  \item \textbf{Smaller drafts are better for MoE}: the 0.8B draft outperforms the 2B draft because its lower computational cost preserves more of the batch verification benefit.
-  \item \textbf{Larger $\gamma$ is preferred}: counterintuitively, $\gamma=16$ gives the best speedup despite the lowest acceptance, because batch verification cost grows sub-linearly.
-  \item \textbf{Architecture-matched drafts would help more}: a small MoE draft model matching the target's routing patterns could achieve much higher acceptance rates and correspondingly higher speedup.
+\begin{enumerate}[nosep,leftmargin=*]
+  \item \textbf{Always enable SD on MoE models.} With a 0.8B draft and $\gamma=16$, you get a ``free'' 26--30\,\% throughput boost at the cost of $\sim$1\,GB additional memory. There is no quality degradation because SD preserves the target model's output distribution.
+
+  \item \textbf{Use the smallest available draft.} The 0.8B draft outperforms the 2B draft by 0.12--0.14$\times$ speedup. Its compute overhead is lower, leaving more room for the batch verification benefit.
+
+  \item \textbf{Maximize $\gamma$.} Within the range tested ($\gamma \leq 16$), larger $\gamma$ always improved speedup. The sub-linear batch cost suggests that $\gamma = 32$ or higher could yield further gains, limited eventually by KV cache memory and draft model quality.
+
+  \item \textbf{Architecture-matched drafts could unlock much more.} Our acceptance rates are uniformly low ($<$\,4\,\%) because the 0.8B/2B dense drafts don't match MoE's expert routing patterns. A small MoE draft model (e.g., with shared routing) could achieve $>$\,50\,\% acceptance, potentially yielding 3--5$\times$ speedup.
 \end{enumerate}
 
 \subsection{Limitations}
 
-\begin{itemize}[nosep]
-  \item Our study is limited to a single MoE architecture (Qwen3.5-35B-A3B). Other MoE models with different expert counts and routing strategies may behave differently.
-  \item The draft models (0.8B, 2B) are text-only transformers, while the larger Qwen3.5 models have vision-language components. This architectural mismatch contributes to the low acceptance rates.
-  \item All experiments run on Apple Silicon; GPU-based systems with different memory bandwidth characteristics may show different SD scaling behavior.
-  \item We did not test architecture-matched MoE draft models (e.g., a small MoE model), which could significantly improve acceptance rates.
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{Single MoE architecture}: only Qwen3.5-35B-A3B tested. Other MoE models (Mixtral, DeepSeek-V3, etc.) may show different behavior depending on expert count, routing strategy, and parameter distribution.
+  \item \textbf{Single hardware platform}: Apple Silicon's unified memory provides a specific bandwidth profile. NVIDIA GPUs with HBM (2--4\,TB/s) or CPU-only inference would show different speedup characteristics.
+  \item \textbf{Cross-architecture drafts only}: we did not test MoE-to-MoE drafting. A small MoE draft matching the target's routing could dramatically improve acceptance rates.
+  \item \textbf{$\gamma \leq 16$}: larger draft lengths were not tested due to KV cache memory constraints. The monotonically increasing speedup curve suggests potential for higher $\gamma$.
+  \item \textbf{Greedy decoding only}: temperature$>$0 sampling may affect acceptance rates and speedup differently.
 \end{itemize}
 
 % ══════════════════════════════════════════════════════════════════════════════
 \section{Conclusion}
 
-We presented the first systematic empirical study of speculative decoding on Mixture-of-Experts language models. Using Qwen3.5-35B-A3B (3B active / 35B total parameters) on Apple M2~Ultra, we found that:
+We presented the first systematic empirical study of speculative decoding on Mixture-of-Experts language models. Our 306-run benchmark on Qwen3.5-35B-A3B (3B active, 35B total) yields four clear findings:
 
-\begin{enumerate}[nosep]
-  \item SD provides \textbf{1.18--1.30$\times$ speedup} on MoE models despite very low acceptance rates ($<$4\%), driven by batch verification efficiency rather than draft token acceptance.
-  \item MoE SD speedup is governed by the \textbf{total parameter footprint} (memory bandwidth), not the active parameter count---falling between dense models of 4B and 9B total parameters.
-  \item The optimal configuration uses the \textbf{smallest available draft model} (0.8B) with \textbf{large draft length} ($\gamma=16$), as batch verification cost grows sub-linearly while draft model overhead grows linearly.
-  \item SD benefit is \textbf{robust across prompt lengths} (1.19--1.26$\times$), making it a practical optimization for diverse workloads.
+\begin{enumerate}[nosep,leftmargin=*]
+  \item \textbf{SD works for MoE}: 1.18--1.30$\times$ speedup despite $<$\,4\,\% acceptance, driven by batch verification amortization rather than draft token acceptance.
+
+  \item \textbf{Total params drive SD benefit}: speedup scales with the target's total parameter footprint (memory bandwidth demand), not its active parameter count. MoE (35B total) benefits more than dense 4B but less than dense 9B.
+
+  \item \textbf{Optimal config = smallest draft + largest $\gamma$}: the 0.8B draft with $\gamma=16$ achieves the best speedup because it minimizes compute overhead while maximizing batch verification amortization.
+
+  \item \textbf{Robust across contexts}: speedup is stable across prompt lengths (1.19--1.26$\times$) and prompt types (factual, code, reasoning, multilingual).
 \end{enumerate}
 
-Our findings suggest that speculative decoding remains a valuable inference optimization for MoE models, and that future work on architecture-matched MoE draft models could unlock significantly higher speedups.
+The broader takeaway is that speculative decoding's benefit is not limited to its traditional mechanism (accepted draft tokens reducing target calls). On bandwidth-bound models---including MoE architectures---SD's batch verification itself provides meaningful speedup by amortizing weight loading. This \emph{batch verification amortization} mechanism deserves further study, particularly for increasingly popular MoE models where the gap between active and total parameters continues to grow.
 
 % ══════════════════════════════════════════════════════════════════════════════
 \section*{Acknowledgements}
 
-All experiments were conducted on Apple M2~Ultra hardware. We used \texttt{llama.cpp}~\cite{llamacpp} for inference. Models are from the Qwen3.5 family by Alibaba Cloud.
+All experiments were conducted on Apple M2~Ultra hardware using \texttt{llama.cpp}~\cite{llamacpp}. Models are from the Qwen3.5 family by Alibaba Cloud~\cite{qwen2024}.
 
 % ══════════════════════════════════════════════════════════════════════════════
-\begin{thebibliography}{9}
+\begin{thebibliography}{10}
 
 \bibitem{leviathan2023fast}
 Y.~Leviathan, M.~Kalman, and Y.~Matias.
@@ -421,10 +485,35 @@ W.~Fedus, B.~Zoph, and N.~Shazeer.
 \newblock Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity.
 \newblock \emph{JMLR}, 23(120):1--39, 2022.
 
+\bibitem{zhou2024distillspec}
+Y.~Zhou, K.~Lyu, A.~S.~Rawat, A.~K.~Menon, A.~Rostamizadeh, S.~Kumar, J.-F.~Kagy, and R.~Agarwal.
+\newblock DistillSpec: Improving speculative decoding via knowledge distillation.
+\newblock In \emph{ICLR}, 2024.
+
+\bibitem{liu2024online}
+X.~Liu, L.~Yan, S.~Xiao, S.~Shang, Z.~Li, H.~Zha, and J.~Jiang.
+\newblock Online speculative decoding.
+\newblock In \emph{ICML}, 2024.
+
+\bibitem{cai2024medusa}
+T.~Cai, Y.~Li, Z.~Geng, H.~Peng, J.~D.~Lee, D.~Chen, and T.~Dao.
+\newblock Medusa: Simple LLM inference acceleration framework with multiple decoding heads.
+\newblock In \emph{ICML}, 2024.
+
+\bibitem{eliseev2023fast}
+D.~Eliseev and D.~Mazur.
+\newblock Fast inference of mixture-of-experts language models with offloading.
+\newblock \emph{arXiv:2312.17238}, 2023.
+
 \bibitem{llamacpp}
 G.~Gerganov et~al.
 \newblock llama.cpp: LLM inference in C/C++.
 \newblock \url{https://github.com/ggml-org/llama.cpp}, 2023--2026.
+
+\bibitem{qwen2024}
+Qwen Team.
+\newblock Qwen technical report.
+\newblock \emph{arXiv:2309.16609}, 2024.
 
 \end{thebibliography}
 

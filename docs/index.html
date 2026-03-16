@@ -433,8 +433,8 @@ footer a { color: var(--accent); }
     <div class="finding">
       <h4><span class="e">2. Total Params Drive Benefit</span><span class="z">2. 总参数量决定收益</span></h4>
       <p>
-        <span class="e">SD speedup scales with <span class="number-highlight">total parameter footprint</span> (memory bandwidth), not active compute. MoE with 35B total, 3B active gets more speedup than Dense 4B but less than Dense 9B.</span>
-        <span class="z">SD加速与<span class="number-highlight">总参数量</span>（内存带宽）成正比，而非活跃计算量。35B总量、3B活跃的MoE加速效果介于Dense 4B和Dense 9B之间。</span>
+        <span class="e">SD speedup scales with <span class="number-highlight">total parameter footprint</span> (memory bandwidth), not active compute. MoE with 35B total, 3B active gets more speedup than Dense 4B but less than Dense 9B. Dense 4B is the key control: its active params (4B) ≈ MoE's (3B), so the only differing variable is total params — isolating total footprint as the causal driver.</span>
+        <span class="z">SD加速与<span class="number-highlight">总参数量</span>（内存带宽）成正比，而非活跃计算量。35B总量、3B活跃的MoE加速效果介于Dense 4B和Dense 9B之间。Dense 4B是关键对照：其活跃参数（4B）≈ MoE（3B），因此唯一不同的变量是总参数量——由此分离出总参数量作为因果驱动因素。</span>
       </p>
     </div>
     <div class="finding">
@@ -590,6 +590,13 @@ footer a { color: var(--accent); }
       <span class="e"><strong>Figure 1: SD Speedup vs Active Parameter Count</strong> (draft: 0.8B, γ=8). The MoE models (★) at 3B active params get <em>more</em> speedup than the Dense 4B model — proving that total parameter footprint (memory bandwidth), not active compute, drives SD benefit.</span>
       <span class="z"><strong>图1：SD加速比 vs 活跃参数量</strong>（草稿：0.8B, γ=8）。MoE模型（★）虽然只有3B活跃参数，加速却<em>高于</em>Dense 4B——证明决定SD收益的是总参数量（内存带宽），而非活跃计算量。</span>
     </div>
+  </div>
+
+  <div class="analogy-box">
+    <p>
+      <span class="e"><strong>Why compare with Dense 4B instead of Dense 9B?</strong> Dense 4B has 4B active params — close to MoE's 3B active params. If speedup only depended on active compute, they should be similar. But MoE gets <em>higher</em> speedup — the only explanation is its larger total parameter footprint (35B vs 4B). Dense 9B differs from MoE in <em>both</em> active and total params, so it cannot isolate which factor matters. We use Dense 9B as a bandwidth upper-bound reference, and Dense 4B as the controlled causal comparison.</span>
+      <span class="z"><strong>为什么和 Dense 4B 比，而不是 Dense 9B？</strong> Dense 4B 的活跃参数（4B）≈ MoE 的活跃参数（3B）。如果加速只取决于活跃计算量，两者应差不多。但 MoE 的加速反而<em>更高</em>——唯一的解释是其更大的总参数量（35B vs 4B）。Dense 9B 的活跃参数和总参数<em>都</em>与 MoE 不同，无法分离哪个因素起作用。因此我们用 Dense 9B 作为带宽上限参照，用 Dense 4B 作为控制变量的因果对比。</span>
+    </p>
   </div>
 
   <div class="fig-grid">

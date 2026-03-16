@@ -300,6 +300,9 @@ Table~\ref{tab:sd_full} presents all SD results. Two patterns dominate:
 
 Figure~\ref{fig:speedup_curve} reveals the central finding. Plotting SD speedup against active parameter count, the MoE models (3B active) fall \emph{above} the dense 4B model, despite having fewer active parameters. This proves that SD speedup is not a function of active compute but of total memory footprint.
 
+\paragraph{Why Dense 4B as the primary control.}
+We deliberately compare MoE against Dense~4B rather than Dense~9B because the comparison isolates a single causal variable. Dense~4B has 4B active (and total) parameters, close to the MoE's 3B active parameters; the key difference is \emph{total} parameter count (4B vs 35B). Any speedup gap between these two models can therefore only be attributed to total memory footprint, not to active compute. Dense~9B, by contrast, differs from MoE in \emph{both} active parameters (9B vs 3B) and total parameters (9B vs 35B), making it impossible to disentangle which factor drives the speedup difference. We therefore use Dense~9B as a bandwidth \emph{upper bound} reference point, while the MoE vs Dense~4B comparison provides the controlled causal evidence.
+
 \begin{figure}[H]
   \centering
   \includegraphics[width=0.82\textwidth]{../results/plots/fig1_speedup_curve.png}
